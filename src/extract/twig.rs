@@ -28,6 +28,7 @@ pub fn extract(
     extract_blocks(content, relative_path, role, include_snippets, &mut facts);
     extract_template_references(content, relative_path, role, include_snippets, &mut facts);
     extract_route_references(content, relative_path, role, include_snippets, &mut facts);
+    extract_snippet_references(content, relative_path, role, include_snippets, &mut facts);
 
     facts.into_vec()
 }
@@ -137,6 +138,58 @@ fn extract_route_references(
     }
 }
 
+fn extract_snippet_references(
+    content: &str,
+    relative_path: &Path,
+    role: FactRole,
+    include_snippets: bool,
+    facts: &mut FactCollector,
+) {
+    for captures in trans_filter_re().captures_iter(content) {
+        let Some(snippet_match) = captures.get(1).or_else(|| captures.get(2)) else {
+            continue;
+        };
+
+        if !looks_like_snippet_key(snippet_match.as_str()) {
+            continue;
+        }
+
+        facts.push(
+            role,
+            format!("snippet:key:{}", snippet_match.as_str()),
+            evidence(
+                content,
+                relative_path,
+                snippet_match.start(),
+                include_snippets,
+            ),
+            Confidence::High,
+            "twig.snippet.trans",
+        );
+    }
+
+    for captures in snippet_call_re().captures_iter(content) {
+        let Some(method) = captures.get(1) else {
+            continue;
+        };
+        let Some(snippet) = captures.get(2).or_else(|| captures.get(3)) else {
+            continue;
+        };
+
+        if !looks_like_snippet_key(snippet.as_str()) {
+            continue;
+        }
+
+        facts.push(
+            role,
+            format!("snippet:key:{}", snippet.as_str()),
+            evidence(content, relative_path, snippet.start(), include_snippets),
+            Confidence::High,
+            format!("twig.snippet.{}", method.as_str()),
+        );
+    }
+}
+
 fn block_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"\{%-?\s*block\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap())
@@ -157,6 +210,18 @@ fn string_re() -> &'static Regex {
 fn route_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r#"\b(path|seoUrl)\s*\(\s*(?:'([^']+)'|"([^"]+)")"#).unwrap())
+}
+
+fn trans_filter_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?:'([^']+)'|"([^"]+)")\s*\|\s*trans\b"#).unwrap())
+}
+
+fn snippet_call_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?:\bthis\s*\.\s*)?\$(t|te|tc)\s*\(\s*(?:'([^']+)'|"([^"]+)")"#).unwrap()
+    })
 }
 
 fn template_name_from_path(relative_path: &Path) -> Option<String> {
@@ -194,6 +259,17 @@ fn looks_like_route_name(value: &str) -> bool {
     let trimmed = value.trim();
     !trimmed.is_empty()
         && trimmed.contains('.')
+        && trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+}
+
+fn looks_like_snippet_key(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty()
+        && trimmed.contains('.')
+        && !trimmed.starts_with('.')
+        && !trimmed.ends_with('.')
         && trimmed
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
@@ -281,6 +357,8 @@ mod tests {
     {% sw_include '@Storefront/storefront/component/buy-widget.html.twig' %}
     <a href="{{ path('frontend.detail.page') }}"></a>
     <a href="{{ seoUrl('frontend.navigation.page') }}"></a>
+    {{ 'sw-order.general.mainMenuItemGeneral'|trans }}
+    {{ $t('sw-order.general.mainMenuItemList') }}
 {% endblock %}
 "#;
 
@@ -301,6 +379,8 @@ mod tests {
         assert!(surfaces.contains(&"twig:block:storefront_page_product_detail_buy".to_string()));
         assert!(surfaces.contains(&"route:name:frontend.detail.page".to_string()));
         assert!(surfaces.contains(&"route:name:frontend.navigation.page".to_string()));
+        assert!(surfaces.contains(&"snippet:key:sw-order.general.mainMenuItemGeneral".to_string()));
+        assert!(surfaces.contains(&"snippet:key:sw-order.general.mainMenuItemList".to_string()));
         assert!(facts.iter().all(|fact| fact.role == FactRole::Usage));
         assert!(facts.iter().any(|fact| fact.evidence.snippet.is_some()));
     }

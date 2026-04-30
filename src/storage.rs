@@ -14,6 +14,7 @@ use crate::source_link::store_plugin_mirror_url;
 use crate::walker::{CandidateFile, Language, PluginInfo, WalkStats, discover_candidates};
 
 const SCHEMA_VERSION: i64 = 1;
+const EXTRACTION_CHUNK_SIZE: usize = 256;
 
 pub fn build_index(args: IndexArgs, verbose: bool) -> Result<()> {
     let started_at = Instant::now();
@@ -24,12 +25,6 @@ pub fn build_index(args: IndexArgs, verbose: bool) -> Result<()> {
         discover_candidates(&args).context("discover plugin candidate files")?;
     let discover_elapsed = discover_started_at.elapsed();
 
-    let include_snippets = !args.no_snippets;
-    let extract_started_at = Instant::now();
-    let extracted_candidates = extract_candidates(candidates, include_snippets, &args.threads)?;
-    let extract_elapsed = extract_started_at.elapsed();
-    let extraction_timings = ExtractionTimings::from_candidates(&extracted_candidates);
-
     let sqlite_started_at = Instant::now();
     let mut connection = open_fresh_database(&args.out, args.force)?;
     configure_bulk_write_database(&connection).context("configure SQLite bulk write settings")?;
@@ -37,42 +32,50 @@ pub fn build_index(args: IndexArgs, verbose: bool) -> Result<()> {
         .pragma_update(None, "foreign_keys", true)
         .context("enable SQLite foreign keys")?;
 
-    let summary = {
+    let insert_result = {
         let transaction = connection
             .transaction()
             .context("start SQLite index transaction")?;
 
         create_schema(&transaction).context("create SQLite index schema")?;
-        let summary = insert_index_data(
+        let include_snippets = !args.no_snippets;
+        let insert_result = insert_index_data(
             &transaction,
             &args,
-            extracted_candidates,
+            candidates,
             walk_stats,
             include_snippets,
         )
         .context("insert extracted facts")?;
         create_indexes(&transaction).context("create SQLite index indexes")?;
-        insert_metadata(&transaction, &args, &summary, include_snippets)
-            .context("insert SQLite index metadata")?;
+        insert_metadata(
+            &transaction,
+            &args,
+            &insert_result.summary,
+            include_snippets,
+        )
+        .context("insert SQLite index metadata")?;
 
         transaction
             .commit()
             .context("commit SQLite index transaction")?;
-        summary
+        insert_result
     };
-    let sqlite_elapsed = sqlite_started_at.elapsed();
+    let sqlite_elapsed = sqlite_started_at
+        .elapsed()
+        .saturating_sub(insert_result.extract_elapsed);
 
     if verbose {
-        print_index_summary(&args.out, &summary);
+        print_index_summary(&args.out, &insert_result.summary);
         print_index_timings(
             discover_elapsed,
-            extract_elapsed,
+            insert_result.extract_elapsed,
             sqlite_elapsed,
-            &extraction_timings,
+            &insert_result.extraction_timings,
         );
     }
 
-    print_index_duration(&args.out, &summary, started_at.elapsed());
+    print_index_duration(&args.out, &insert_result.summary, started_at.elapsed());
 
     Ok(())
 }
@@ -110,9 +113,17 @@ struct BuildSummary {
 }
 
 #[derive(Debug)]
-struct ImpactAggregate {
-    usage_count: i64,
-    confidence: Confidence,
+struct IndexInsertResult {
+    summary: BuildSummary,
+    extraction_timings: ExtractionTimings,
+    extract_elapsed: Duration,
+}
+
+#[derive(Debug)]
+struct IndexInsertState {
+    summary: BuildSummary,
+    plugin_ids: HashMap<(String, Option<String>, String), i64>,
+    surface_ids: HashMap<String, i64>,
 }
 
 #[derive(Debug)]
@@ -167,18 +178,48 @@ struct LanguageExtractionTiming {
 }
 
 impl ExtractionTimings {
-    fn from_candidates(candidates: &[ExtractedCandidate]) -> Self {
-        let mut timings = ExtractionTimings::default();
-
+    fn add_candidates(&mut self, candidates: &[ExtractedCandidate]) {
         for candidate in candidates {
-            let timing = timings.languages.entry(candidate.language).or_default();
+            let timing = self.languages.entry(candidate.language).or_default();
             timing.files += 1;
             timing.facts += candidate.facts.len();
             timing.read_duration += candidate.read_duration;
             timing.extract_duration += candidate.extract_duration;
         }
+    }
+}
 
-        timings
+struct ExtractionExecutor {
+    pool: Option<rayon::ThreadPool>,
+}
+
+impl ExtractionExecutor {
+    fn new(threads: &str) -> Result<Self> {
+        let pool = if let Some(threads) = parse_threads(threads)? {
+            Some(
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .context("build extraction thread pool")?,
+            )
+        } else {
+            None
+        };
+
+        Ok(Self { pool })
+    }
+
+    fn extract(
+        &self,
+        candidates: Vec<CandidateFile>,
+        include_snippets: bool,
+    ) -> Result<Vec<ExtractedCandidate>> {
+        match &self.pool {
+            Some(pool) => {
+                pool.install(|| extract_candidates_parallel(candidates, include_snippets))
+            }
+            None => extract_candidates_parallel(candidates, include_snippets),
+        }
     }
 }
 
@@ -227,7 +268,7 @@ fn configure_bulk_write_database(connection: &Connection) -> Result<()> {
         "
         pragma journal_mode = off;
         pragma synchronous = off;
-        pragma temp_store = memory;
+        pragma temp_store = file;
         pragma locking_mode = exclusive;
         pragma cache_size = -200000;
         ",
@@ -309,21 +350,6 @@ fn create_indexes(transaction: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
-fn extract_candidates(
-    candidates: Vec<CandidateFile>,
-    include_snippets: bool,
-    threads: &str,
-) -> Result<Vec<ExtractedCandidate>> {
-    match parse_threads(threads)? {
-        Some(threads) => rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
-            .context("build extraction thread pool")?
-            .install(|| extract_candidates_parallel(candidates, include_snippets)),
-        None => extract_candidates_parallel(candidates, include_snippets),
-    }
-}
-
 fn extract_candidates_parallel(
     candidates: Vec<CandidateFile>,
     include_snippets: bool,
@@ -387,158 +413,222 @@ fn parse_threads(value: &str) -> Result<Option<usize>> {
 fn insert_index_data(
     transaction: &Transaction<'_>,
     args: &IndexArgs,
-    candidates: Vec<ExtractedCandidate>,
+    candidates: Vec<CandidateFile>,
     walk_stats: WalkStats,
     include_snippets: bool,
-) -> Result<BuildSummary> {
-    let mut summary = BuildSummary {
-        walk_plugins: walk_stats.plugins,
-        files_seen: walk_stats.files_seen,
-        candidates: candidates.len(),
-        skipped_large: walk_stats.skipped_large,
-        skipped_unsupported: walk_stats.skipped_unsupported,
-        ..BuildSummary::default()
+) -> Result<IndexInsertResult> {
+    let mut state = IndexInsertState {
+        summary: BuildSummary {
+            walk_plugins: walk_stats.plugins,
+            files_seen: walk_stats.files_seen,
+            candidates: candidates.len(),
+            skipped_large: walk_stats.skipped_large,
+            skipped_unsupported: walk_stats.skipped_unsupported,
+            ..BuildSummary::default()
+        },
+        plugin_ids: HashMap::new(),
+        surface_ids: HashMap::new(),
     };
 
-    let mut plugin_ids: HashMap<(String, Option<String>, String), i64> = HashMap::new();
-    let mut surface_ids: HashMap<String, i64> = HashMap::new();
-    let mut impacts: HashMap<(i64, i64), ImpactAggregate> = HashMap::new();
+    let extractor = ExtractionExecutor::new(&args.threads)?;
+    let mut extraction_timings = ExtractionTimings::default();
+    let mut extract_elapsed = Duration::default();
+    let mut chunk = Vec::with_capacity(EXTRACTION_CHUNK_SIZE);
 
-    {
-        let mut insert_plugin = transaction.prepare(
-            "
-            insert into plugin (name, version, path)
-            values (?1, ?2, ?3)
-            ",
-        )?;
-        let mut insert_file = transaction.prepare(
-            "
-            insert into file (plugin_id, path, hash)
-            values (?1, ?2, ?3)
-            ",
-        )?;
-        let mut insert_surface = transaction.prepare(
-            "
-            insert into surface (key, kind)
-            values (?1, ?2)
-            ",
-        )?;
-        let mut insert_evidence = transaction.prepare(
-            "
-            insert into evidence (
-                surface_id,
-                plugin_id,
-                file_id,
-                line,
-                column,
-                usage_kind,
-                snippet,
-                confidence
-            )
-            values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-            ",
-        )?;
+    for candidate in candidates {
+        chunk.push(candidate);
 
-        for candidate in candidates {
-            let plugin_path = plugin_folder(&candidate.plugin.root);
-            let plugin_key = (
-                candidate.plugin.name.clone(),
-                candidate.plugin.version.clone(),
-                plugin_path,
-            );
-            let plugin_id = if let Some(plugin_id) = plugin_ids.get(&plugin_key) {
-                *plugin_id
-            } else {
-                insert_plugin.execute(params![
-                    &plugin_key.0,
-                    plugin_key.1.as_deref(),
-                    &plugin_key.2,
-                ])?;
-                let plugin_id = transaction.last_insert_rowid();
-                plugin_ids.insert(plugin_key, plugin_id);
-                plugin_id
-            };
-
-            insert_file.execute(params![
-                plugin_id,
-                path_to_string(&candidate.relative_path),
-                Option::<Vec<u8>>::None,
-            ])?;
-            let file_id = transaction.last_insert_rowid();
-
-            summary.facts_extracted += candidate.facts.len();
-
-            for fact in candidate.facts {
-                if fact.role != FactRole::Usage
-                    || !fact.confidence.include(args.include_low_confidence, false)
-                {
-                    continue;
-                }
-
-                let surface_key = fact.surface.as_str().to_owned();
-                let surface_id = if let Some(surface_id) = surface_ids.get(&surface_key) {
-                    *surface_id
-                } else {
-                    insert_surface.execute(params![&surface_key, fact.kind.as_str()])?;
-                    let surface_id = transaction.last_insert_rowid();
-                    surface_ids.insert(surface_key, surface_id);
-                    surface_id
-                };
-
-                let confidence = fact.confidence;
-                let snippet = if include_snippets {
-                    fact.evidence.snippet
-                } else {
-                    None
-                };
-
-                insert_evidence.execute(params![
-                    surface_id,
-                    plugin_id,
-                    file_id,
-                    fact.evidence.line as i64,
-                    fact.evidence.column.map(|column| column as i64),
-                    fact.usage_kind,
-                    snippet,
-                    confidence_value(confidence),
-                ])?;
-
-                let impact = impacts
-                    .entry((surface_id, plugin_id))
-                    .or_insert(ImpactAggregate {
-                        usage_count: 0,
-                        confidence,
-                    });
-                impact.usage_count += 1;
-                impact.confidence = impact.confidence.max(confidence);
-
-                summary.facts_stored += 1;
-                summary.evidence_rows += 1;
-            }
+        if chunk.len() == EXTRACTION_CHUNK_SIZE {
+            let pending = std::mem::replace(&mut chunk, Vec::with_capacity(EXTRACTION_CHUNK_SIZE));
+            process_candidate_chunk(
+                transaction,
+                args,
+                &extractor,
+                pending,
+                include_snippets,
+                &mut state,
+                &mut extraction_timings,
+                &mut extract_elapsed,
+            )?;
         }
     }
 
-    summary.plugin_rows = plugin_ids.len();
-    summary.surface_rows = surface_ids.len();
-    summary.impact_rows = impacts.len();
+    if !chunk.is_empty() {
+        process_candidate_chunk(
+            transaction,
+            args,
+            &extractor,
+            chunk,
+            include_snippets,
+            &mut state,
+            &mut extraction_timings,
+            &mut extract_elapsed,
+        )?;
+    }
 
-    let mut insert_impact = transaction.prepare(
+    state.summary.plugin_rows = state.plugin_ids.len();
+    state.summary.surface_rows = state.surface_ids.len();
+    state.summary.impact_rows = insert_impact_rows(transaction)?;
+
+    Ok(IndexInsertResult {
+        summary: state.summary,
+        extraction_timings,
+        extract_elapsed,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_candidate_chunk(
+    transaction: &Transaction<'_>,
+    args: &IndexArgs,
+    extractor: &ExtractionExecutor,
+    candidates: Vec<CandidateFile>,
+    include_snippets: bool,
+    state: &mut IndexInsertState,
+    extraction_timings: &mut ExtractionTimings,
+    extract_elapsed: &mut Duration,
+) -> Result<()> {
+    let extract_started_at = Instant::now();
+    let extracted_candidates = extractor
+        .extract(candidates, include_snippets)
+        .context("extract candidate chunk")?;
+    *extract_elapsed += extract_started_at.elapsed();
+    extraction_timings.add_candidates(&extracted_candidates);
+
+    insert_extracted_candidates(
+        transaction,
+        args,
+        extracted_candidates,
+        include_snippets,
+        state,
+    )
+}
+
+fn insert_extracted_candidates(
+    transaction: &Transaction<'_>,
+    args: &IndexArgs,
+    candidates: Vec<ExtractedCandidate>,
+    include_snippets: bool,
+    state: &mut IndexInsertState,
+) -> Result<()> {
+    let mut insert_plugin = transaction.prepare(
         "
-        insert into impact (surface_id, plugin_id, usage_count, confidence)
-        values (?1, ?2, ?3, ?4)
+        insert into plugin (name, version, path)
+        values (?1, ?2, ?3)
+        ",
+    )?;
+    let mut insert_file = transaction.prepare(
+        "
+        insert into file (plugin_id, path, hash)
+        values (?1, ?2, ?3)
+        ",
+    )?;
+    let mut insert_surface = transaction.prepare(
+        "
+        insert into surface (key, kind)
+        values (?1, ?2)
+        ",
+    )?;
+    let mut insert_evidence = transaction.prepare(
+        "
+        insert into evidence (
+            surface_id,
+            plugin_id,
+            file_id,
+            line,
+            column,
+            usage_kind,
+            snippet,
+            confidence
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         ",
     )?;
 
-    for ((surface_id, plugin_id), impact) in impacts {
-        insert_impact.execute(params![
-            surface_id,
+    for candidate in candidates {
+        let plugin_path = plugin_folder(&candidate.plugin.root);
+        let plugin_key = (
+            candidate.plugin.name.clone(),
+            candidate.plugin.version.clone(),
+            plugin_path,
+        );
+        let plugin_id = if let Some(plugin_id) = state.plugin_ids.get(&plugin_key) {
+            *plugin_id
+        } else {
+            insert_plugin.execute(params![
+                &plugin_key.0,
+                plugin_key.1.as_deref(),
+                &plugin_key.2,
+            ])?;
+            let plugin_id = transaction.last_insert_rowid();
+            state.plugin_ids.insert(plugin_key, plugin_id);
+            plugin_id
+        };
+
+        insert_file.execute(params![
             plugin_id,
-            impact.usage_count,
-            confidence_value(impact.confidence),
+            path_to_string(&candidate.relative_path),
+            Option::<Vec<u8>>::None,
         ])?;
+        let file_id = transaction.last_insert_rowid();
+
+        state.summary.facts_extracted += candidate.facts.len();
+
+        for fact in candidate.facts {
+            if fact.role != FactRole::Usage
+                || !fact.confidence.include(args.include_low_confidence, false)
+            {
+                continue;
+            }
+
+            let surface_key = fact.surface.as_str().to_owned();
+            let surface_id = if let Some(surface_id) = state.surface_ids.get(&surface_key) {
+                *surface_id
+            } else {
+                insert_surface.execute(params![&surface_key, fact.kind.as_str()])?;
+                let surface_id = transaction.last_insert_rowid();
+                state.surface_ids.insert(surface_key, surface_id);
+                surface_id
+            };
+
+            let confidence = fact.confidence;
+            let snippet = if include_snippets {
+                fact.evidence.snippet
+            } else {
+                None
+            };
+
+            insert_evidence.execute(params![
+                surface_id,
+                plugin_id,
+                file_id,
+                fact.evidence.line as i64,
+                fact.evidence.column.map(|column| column as i64),
+                fact.usage_kind,
+                snippet,
+                confidence_value(confidence),
+            ])?;
+
+            state.summary.facts_stored += 1;
+            state.summary.evidence_rows += 1;
+        }
     }
 
-    Ok(summary)
+    Ok(())
+}
+
+fn insert_impact_rows(transaction: &Transaction<'_>) -> Result<usize> {
+    let rows = transaction.execute(
+        "
+        insert into impact (surface_id, plugin_id, usage_count, confidence)
+        select surface_id, plugin_id, count(*), max(confidence)
+        from evidence
+        group by surface_id, plugin_id
+        ",
+        [],
+    )?;
+
+    Ok(rows)
 }
 
 fn insert_metadata(

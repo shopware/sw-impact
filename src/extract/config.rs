@@ -102,6 +102,21 @@ pub fn extract_json(
     };
 
     let mut facts = FactCollector::new();
+    if is_snippet_json_file(relative_path) {
+        if role == FactRole::Definition {
+            walk_json_snippets(
+                &value,
+                &mut Vec::new(),
+                content,
+                relative_path,
+                role,
+                include_snippets,
+                &mut facts,
+            );
+        }
+        return Ok(facts.into_vec());
+    }
+
     walk_json(
         &value,
         &mut Vec::new(),
@@ -112,6 +127,58 @@ pub fn extract_json(
         &mut facts,
     );
     Ok(facts.into_vec())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn walk_json_snippets(
+    value: &JsonValue,
+    path: &mut Vec<String>,
+    content: &str,
+    relative_path: &Path,
+    role: FactRole,
+    include_snippets: bool,
+    facts: &mut FactCollector,
+) {
+    match value {
+        JsonValue::Object(map) => {
+            for (key, child) in map {
+                path.push(key.clone());
+                walk_json_snippets(
+                    child,
+                    path,
+                    content,
+                    relative_path,
+                    role,
+                    include_snippets,
+                    facts,
+                );
+                path.pop();
+            }
+        }
+        JsonValue::String(_) if !path.is_empty() => {
+            let snippet_key = path.join(".");
+            let usage_kind = if role == FactRole::Definition {
+                "snippet.key.definition"
+            } else {
+                "snippet.key.usage"
+            };
+
+            emit_value_at_search_offset(
+                format!("snippet:key:{snippet_key}"),
+                usage_kind,
+                Confidence::High,
+                path.last()
+                    .map(String::as_str)
+                    .unwrap_or(snippet_key.as_str()),
+                content,
+                relative_path,
+                role,
+                include_snippets,
+                facts,
+            );
+        }
+        _ => {}
+    }
 }
 
 pub fn extract_yaml(
@@ -1255,6 +1322,17 @@ fn looks_like_api_path(value: &str) -> bool {
     value.starts_with("/api/") || value.starts_with("/store-api/")
 }
 
+fn is_snippet_json_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+        && path.components().any(|component| {
+            component.as_os_str().to_str().is_some_and(|part| {
+                part.eq_ignore_ascii_case("snippet") || part.eq_ignore_ascii_case("snippets")
+            })
+        })
+}
+
 fn is_theme_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -1485,6 +1563,69 @@ mod tests {
                 .map(|fact| fact.kind),
             Some(SurfaceKind::RouteName)
         );
+    }
+
+    #[test]
+    fn extracts_snippet_json_keys_without_generic_config_surfaces() {
+        let content = r#"
+{
+  "sw-order": {
+    "general": {
+      "mainMenuItemGeneral": "Orders",
+      "routeLikeTranslation": "frontend.foo.page",
+      "serviceLikeTranslation": "product.repository"
+    }
+  }
+}
+"#;
+
+        let facts = extract_json(
+            content,
+            Path::new("src/Resources/snippet/en-GB/storefront.en-GB.json"),
+            FactRole::Definition,
+            false,
+        )
+        .unwrap();
+        let surfaces = surfaces(&facts);
+
+        assert!(surfaces.contains(&"snippet:key:sw-order.general.mainMenuItemGeneral".to_string()));
+        assert!(
+            surfaces.contains(&"snippet:key:sw-order.general.routeLikeTranslation".to_string())
+        );
+        assert!(
+            surfaces.contains(&"snippet:key:sw-order.general.serviceLikeTranslation".to_string())
+        );
+        assert!(!surfaces.contains(&"route:name:frontend.foo.page".to_string()));
+        assert!(!surfaces.contains(&"service:id:product.repository".to_string()));
+        assert_eq!(
+            facts
+                .iter()
+                .find(|fact| {
+                    fact.surface.as_str() == "snippet:key:sw-order.general.mainMenuItemGeneral"
+                })
+                .map(|fact| fact.kind),
+            Some(SurfaceKind::SnippetKey)
+        );
+    }
+
+    #[test]
+    fn snippet_json_does_not_emit_usage_facts_for_plugin_indexing() {
+        let facts = extract_json(
+            r#"{
+  "sw-order": {
+    "general": {
+      "mainMenuItemGeneral": "Orders",
+      "routeLikeTranslation": "frontend.foo.page"
+    }
+  }
+}"#,
+            Path::new("src/Resources/snippet/en-GB/storefront.en-GB.json"),
+            FactRole::Usage,
+            false,
+        )
+        .unwrap();
+
+        assert!(facts.is_empty());
     }
 
     #[test]

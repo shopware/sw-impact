@@ -21,6 +21,7 @@ pub fn extract(
     extract_route_literals(content, relative_path, role, include_snippets, &mut facts);
     extract_entity_literals(content, relative_path, role, include_snippets, &mut facts);
     extract_component_literals(content, relative_path, role, include_snippets, &mut facts);
+    extract_snippet_calls(content, relative_path, role, include_snippets, &mut facts);
 
     facts.into_vec()
 }
@@ -314,6 +315,39 @@ fn extract_component_literals(
     }
 }
 
+fn extract_snippet_calls(
+    content: &str,
+    _relative_path: &Path,
+    role: FactRole,
+    _include_snippets: bool,
+    facts: &mut FactCollector,
+) {
+    for captures in snippet_call_re().captures_iter(content) {
+        let Some(method) = captures.get(1) else {
+            continue;
+        };
+        let Some(call_match) = captures.get(0) else {
+            continue;
+        };
+        let literals = read_string_literals_in_call(content, call_match.end() - 1, 1);
+        let Some(snippet) = literals.first() else {
+            continue;
+        };
+
+        if !looks_like_snippet_key(&snippet.value) {
+            continue;
+        }
+
+        facts.push(
+            role,
+            format!("snippet:key:{}", snippet.value),
+            facts.evidence(snippet.start),
+            Confidence::High,
+            format!("vue.i18n.{}", method.as_str()),
+        );
+    }
+}
+
 fn extract_property_literals(content: &str, regex: &Regex, mut emit: impl FnMut(&Literal, &str)) {
     for captures in regex.captures_iter(content) {
         let Some(property) = captures.get(1) else {
@@ -424,6 +458,11 @@ fn component_attribute_re() -> &'static Regex {
 fn vue_component_tag_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"</?\s*(sw-[a-z0-9][a-z0-9-]*)\b").unwrap())
+}
+
+fn snippet_call_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?:\bthis\s*\.\s*)?\$(t|te|tc)\s*\(").unwrap())
 }
 
 #[derive(Debug, Clone)]
@@ -790,6 +829,16 @@ fn looks_like_admin_route_name(value: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
+fn looks_like_snippet_key(value: &str) -> bool {
+    !value.is_empty()
+        && value.contains('.')
+        && !value.starts_with('.')
+        && !value.ends_with('.')
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+}
+
 fn looks_like_entity_name(value: &str) -> bool {
     !value.is_empty()
         && value
@@ -896,6 +945,8 @@ const repo = repositoryFactory.create('product');
 Shopware.Service('acl');
 Shopware.State.get('swProductDetail');
 this.$router.push({ name: 'sw.product.detail' });
+this.$t('sw-order.general.mainMenuItemGeneral');
+this.$te('sw-order.general.mainMenuItemList');
 "#;
 
         let facts = extract(
@@ -917,6 +968,8 @@ this.$router.push({ name: 'sw.product.detail' });
         assert!(surfaces.contains(&"dal:entity:product".to_string()));
         assert!(surfaces.contains(&"service:id:acl".to_string()));
         assert!(surfaces.contains(&"admin:state-store:swProductDetail".to_string()));
+        assert!(surfaces.contains(&"snippet:key:sw-order.general.mainMenuItemGeneral".to_string()));
+        assert!(surfaces.contains(&"snippet:key:sw-order.general.mainMenuItemList".to_string()));
         assert!(facts.iter().any(|fact| fact.evidence.snippet.is_some()));
         assert_eq!(
             facts
@@ -932,6 +985,7 @@ this.$router.push({ name: 'sw.product.detail' });
         let content = r#"
 <template>
     <sw-product-detail entity="product" route="sw.product.detail" component="sw-product-card" />
+    {{ $tc('sw-order.list.textOrdersTotal', 2) }}
 </template>
 <script>
 export default {
@@ -957,6 +1011,7 @@ export default {
         assert!(surfaces.contains(&"dal:entity:product".to_string()));
         assert!(surfaces.contains(&"dal:entity:category".to_string()));
         assert!(surfaces.contains(&"admin:state-store:swCategoryDetail".to_string()));
+        assert!(surfaces.contains(&"snippet:key:sw-order.list.textOrdersTotal".to_string()));
         assert!(facts.iter().all(|fact| fact.role == FactRole::Definition));
         assert!(facts.iter().all(|fact| fact.evidence.snippet.is_none()));
     }

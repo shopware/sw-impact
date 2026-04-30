@@ -46,6 +46,7 @@ pub enum SurfaceKind {
     AdminStateStore,
     StorefrontJsPlugin,
     FeatureFlag,
+    SnippetKey,
     Unknown,
 }
 
@@ -70,6 +71,7 @@ impl SurfaceKind {
             Self::AdminStateStore => "admin-state-store",
             Self::StorefrontJsPlugin => "storefront-js-plugin",
             Self::FeatureFlag => "feature-flag",
+            Self::SnippetKey => "snippet-key",
             Self::Unknown => "unknown",
         }
     }
@@ -111,6 +113,8 @@ impl SurfaceKind {
             Self::StorefrontJsPlugin
         } else if key.starts_with("feature-flag:") {
             Self::FeatureFlag
+        } else if key.starts_with("snippet:key:") {
+            Self::SnippetKey
         } else {
             Self::Unknown
         }
@@ -371,6 +375,10 @@ mod tests {
         assert_eq!(
             SurfaceKey::new("admin:component:sw-product-detail").kind(),
             SurfaceKind::AdminComponent
+        );
+        assert_eq!(
+            SurfaceKey::new("snippet:key:sw-order.general.mainMenuItemGeneral").kind(),
+            SurfaceKind::SnippetKey
         );
     }
 

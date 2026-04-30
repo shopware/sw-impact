@@ -474,6 +474,7 @@ impl TryFrom<RawEvidence> for ImpactEvidence {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extract::config::extract_json;
     use crate::model::{Evidence, Parameter};
 
     fn evidence(path: &str, line: usize) -> Evidence {
@@ -551,5 +552,58 @@ mod tests {
         assert_eq!(min_confidence(false, false), Confidence::Medium as i64);
         assert_eq!(min_confidence(true, false), Confidence::Low as i64);
         assert_eq!(min_confidence(true, true), Confidence::High as i64);
+    }
+
+    #[test]
+    fn snippet_value_changes_are_not_changed_surfaces_but_removed_keys_are() {
+        let base = snippet_definitions(
+            r#"{
+  "sw-order": {
+    "general": {
+      "title": "Orders",
+      "subtitle": "Overview"
+    }
+  }
+}"#,
+        );
+        let changed_value = snippet_definitions(
+            r#"{
+  "sw-order": {
+    "general": {
+      "title": "Updated orders",
+      "subtitle": "Overview"
+    }
+  }
+}"#,
+        );
+        let removed_key = snippet_definitions(
+            r#"{
+  "sw-order": {
+    "general": {
+      "title": "Updated orders"
+    }
+  }
+}"#,
+        );
+
+        assert!(diff_definitions(&base, &changed_value).is_empty());
+
+        let changes = diff_definitions(&changed_value, &removed_key);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(
+            changes[0].surface.as_str(),
+            "snippet:key:sw-order.general.subtitle"
+        );
+        assert_eq!(changes[0].change, ChangeKind::Removed);
+    }
+
+    fn snippet_definitions(content: &str) -> Vec<Fact> {
+        extract_json(
+            content,
+            Path::new("Resources/snippet/en-GB/storefront.en-GB.json"),
+            FactRole::Definition,
+            false,
+        )
+        .expect("snippet json extracts")
     }
 }
