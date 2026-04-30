@@ -62,7 +62,7 @@ pub struct CheckArgs {
     #[arg(long)]
     pub shopware: PathBuf,
 
-    #[arg(long, default_value = "upstream/trunk")]
+    #[arg(long, default_value = "origin/trunk")]
     pub base: String,
 
     #[arg(long)]

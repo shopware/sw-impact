@@ -14,10 +14,13 @@ use crate::report::{
 };
 use crate::walker::{Language, language_for_path};
 
+const DEFAULT_BASE: &str = "origin/trunk";
+
 pub fn run_check(args: CheckArgs, verbose: bool) -> Result<()> {
     let worktree = git::worktree_root(&args.shopware)?;
-    let merge_base = git::resolve_merge_base(&worktree, &args.base)?;
-    let changed_files = git::changed_files(&worktree, &merge_base)?;
+    let base = resolve_check_base(&worktree, &args.base)?;
+    let merge_base = base.revision.as_str();
+    let changed_files = git::changed_files(&worktree, merge_base)?;
 
     if verbose {
         tracing::info!(
@@ -27,7 +30,7 @@ pub fn run_check(args: CheckArgs, verbose: bool) -> Result<()> {
         );
     }
 
-    let changed_surfaces = collect_changed_surfaces(&worktree, &merge_base, &changed_files)?;
+    let changed_surfaces = collect_changed_surfaces(&worktree, merge_base, &changed_files)?;
     let mut impacts = lookup_impacts(
         &args.index,
         &changed_surfaces,
@@ -46,7 +49,7 @@ pub fn run_check(args: CheckArgs, verbose: bool) -> Result<()> {
     }
 
     let report = ImpactReport {
-        base: args.base,
+        base: base.label,
         compared: "working tree".to_owned(),
         changed_surfaces: changed_surfaces.len(),
         impacts,
@@ -54,6 +57,32 @@ pub fn run_check(args: CheckArgs, verbose: bool) -> Result<()> {
 
     print!("{}", format_human_report(&report));
     Ok(())
+}
+
+struct CheckBase {
+    revision: String,
+    label: String,
+}
+
+fn resolve_check_base(worktree: &Path, base: &str) -> Result<CheckBase> {
+    match git::resolve_merge_base(worktree, base) {
+        Ok(merge_base) => Ok(CheckBase {
+            revision: merge_base,
+            label: base.to_owned(),
+        }),
+        Err(error) if base == DEFAULT_BASE => {
+            tracing::debug!(
+                base,
+                error = %error,
+                "default check base was unavailable; falling back to HEAD"
+            );
+            Ok(CheckBase {
+                revision: "HEAD".to_owned(),
+                label: "HEAD".to_owned(),
+            })
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn collect_changed_surfaces(

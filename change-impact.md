@@ -98,13 +98,13 @@ Useful options:
 ```bash
 sw-impact check \
   --shopware /path/to/shopware \
-  --base upstream/trunk \
+  --base origin/trunk \
   --index .sw-impact/plugins.sqlite
 ```
 
 Required behavior:
 
-1. Resolve the merge base with `upstream/trunk`.
+1. Resolve the merge base with `origin/trunk`.
 2. List changed Shopware files.
 3. Include committed changes, uncommitted tracked changes, and untracked files.
 4. Extract Shopware surfaces from base and current content.
@@ -501,7 +501,7 @@ Example output:
 
 ```text
 Shopware Impact Report
-Base: upstream/trunk
+Base: origin/trunk
 Compared: working tree
 
 High confidence impact

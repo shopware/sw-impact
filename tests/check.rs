@@ -118,6 +118,23 @@ class CartService
         .stdout(predicate::str::contains(
             "https://github.com/shopware/store-plugin-mirror/blob/main/plugins/shopware6/plugin/SwagCart/src/CartSubscriber.php#L",
         ));
+
+    Command::cargo_bin("sw-impact")
+        .expect("binary exists")
+        .args([
+            "check",
+            "--shopware",
+            shopware.to_str().expect("utf-8 shopware path"),
+            "--index",
+            index.to_str().expect("utf-8 index path"),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Base: HEAD"))
+        .stdout(predicate::str::contains(
+            "php:method:Shopware\\Core\\Checkout\\Cart\\CartService::recalculate",
+        ))
+        .stdout(predicate::str::contains("affected plugins: 1"));
 }
 
 fn git<const N: usize>(repo: &Path, args: [&str; N]) -> std::io::Result<()> {

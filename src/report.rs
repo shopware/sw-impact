@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn formats_no_impact_report() {
         let report = ImpactReport {
-            base: "upstream/trunk".to_owned(),
+            base: "origin/trunk".to_owned(),
             compared: "working tree".to_owned(),
             changed_surfaces: 1,
             impacts: Vec::new(),
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn formats_impact_with_truncated_evidence() {
         let report = ImpactReport {
-            base: "upstream/trunk".to_owned(),
+            base: "origin/trunk".to_owned(),
             compared: "working tree".to_owned(),
             changed_surfaces: 1,
             impacts: vec![SurfaceImpact {

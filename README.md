@@ -29,7 +29,7 @@ Check a local Shopware worktree:
 ```bash
 cargo run -- check \
   --shopware /path/to/shopware \
-  --base upstream/trunk \
+  --base origin/trunk \
   --index .sw-impact/plugins.sqlite
 ```
 

@@ -241,6 +241,7 @@ fn extract_usages(
 ) {
     if let Some(tree) = tree {
         emit_ast_class_usages(content, tree.root_node(), context, sink);
+        emit_ast_instance_method_usages(content, tree.root_node(), context, sink);
     }
     if content.contains("::") {
         emit_static_access_usages(content, context, sink);
@@ -477,6 +478,269 @@ fn emit_ast_class_reference(
     }
 
     true
+}
+
+#[derive(Default)]
+struct InstanceTypes {
+    properties: HashMap<String, String>,
+    variables: HashMap<String, String>,
+}
+
+impl InstanceTypes {
+    fn is_empty(&self) -> bool {
+        self.properties.is_empty() && self.variables.is_empty()
+    }
+}
+
+enum InstanceReceiver {
+    Property(String),
+    Variable(String),
+}
+
+struct InstanceMethodCall {
+    receiver: InstanceReceiver,
+    method_name: String,
+    method_offset: usize,
+}
+
+fn emit_ast_instance_method_usages(
+    content: &str,
+    root: Node<'_>,
+    context: &PhpContext,
+    sink: &mut FactSink<'_>,
+) {
+    let types = collect_instance_types(content, root, context);
+    if types.is_empty() {
+        return;
+    }
+
+    let mut cursor = root.walk();
+    let mut stack = vec![root];
+
+    while let Some(node) = stack.pop() {
+        if matches!(
+            node.kind(),
+            "member_call_expression" | "nullsafe_member_call_expression"
+        ) && let Some(call) = parse_instance_method_call(content, node)
+        {
+            let fqcn = match &call.receiver {
+                InstanceReceiver::Property(property) => types.properties.get(property),
+                InstanceReceiver::Variable(variable) => types.variables.get(variable),
+            };
+
+            if let Some(fqcn) = fqcn {
+                sink.usage(
+                    format!("php:method:{fqcn}::{}", call.method_name),
+                    call.method_offset,
+                    Confidence::High,
+                    "instance-call",
+                );
+            }
+        }
+
+        for child in node.children(&mut cursor) {
+            if child.is_named() {
+                stack.push(child);
+            }
+        }
+    }
+}
+
+fn collect_instance_types(content: &str, root: Node<'_>, context: &PhpContext) -> InstanceTypes {
+    let mut types = InstanceTypes::default();
+    let mut cursor = root.walk();
+    let mut stack = vec![root];
+
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "property_declaration" => {
+                if let Some(fqcn) = resolved_node_type(content, node, context) {
+                    for property in property_names(content, node) {
+                        types.properties.insert(property, fqcn.clone());
+                    }
+                }
+            }
+            "property_promotion_parameter" => {
+                if let (Some(fqcn), Some(variable)) = (
+                    resolved_node_type(content, node, context),
+                    parameter_name(content, node),
+                ) {
+                    types.properties.insert(variable.clone(), fqcn.clone());
+                    types.variables.insert(variable, fqcn);
+                }
+            }
+            "simple_parameter" | "variadic_parameter" => {
+                if let (Some(fqcn), Some(variable)) = (
+                    resolved_node_type(content, node, context),
+                    parameter_name(content, node),
+                ) {
+                    types.variables.insert(variable, fqcn);
+                }
+            }
+            _ => {}
+        }
+
+        for child in node.children(&mut cursor) {
+            if child.is_named() {
+                stack.push(child);
+            }
+        }
+    }
+
+    let mut cursor = root.walk();
+    let mut stack = vec![root];
+
+    while let Some(node) = stack.pop() {
+        if node.kind() == "assignment_expression" {
+            map_assigned_property_type(content, node, &mut types);
+        }
+
+        for child in node.children(&mut cursor) {
+            if child.is_named() {
+                stack.push(child);
+            }
+        }
+    }
+
+    types
+}
+
+fn resolved_node_type(content: &str, node: Node<'_>, context: &PhpContext) -> Option<String> {
+    let type_node = node.child_by_field_name("type")?;
+
+    for named_type in descendant_kinds(type_node, "named_type") {
+        if let Ok(raw_type) = named_type.utf8_text(content.as_bytes())
+            && let Some(fqcn) = context.resolve_class_name(raw_type, named_type.start_byte())
+            && is_shopware_fqcn(&fqcn)
+        {
+            return Some(fqcn);
+        }
+    }
+
+    None
+}
+
+fn first_descendant_kind<'tree>(root: Node<'tree>, kind: &str) -> Option<Node<'tree>> {
+    descendant_kinds(root, kind).into_iter().next()
+}
+
+fn descendant_kinds<'tree>(root: Node<'tree>, kind: &str) -> Vec<Node<'tree>> {
+    let mut matches = Vec::new();
+    let mut stack = vec![root];
+
+    while let Some(node) = stack.pop() {
+        if node.kind() == kind {
+            matches.push(node);
+            continue;
+        }
+
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+
+    matches
+}
+
+fn property_names(content: &str, root: Node<'_>) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut cursor = root.walk();
+
+    for child in root.named_children(&mut cursor) {
+        if child.kind() == "property_element"
+            && let Some(name_node) = child.child_by_field_name("name")
+            && let Ok(raw_name) = name_node.utf8_text(content.as_bytes())
+            && let Some(name) = raw_name.strip_prefix('$')
+        {
+            names.push(name.to_string());
+        }
+    }
+
+    names
+}
+
+fn parameter_name(content: &str, node: Node<'_>) -> Option<String> {
+    let name_node = node.child_by_field_name("name")?;
+    if name_node.kind() == "variable_name" {
+        let raw_name = name_node.utf8_text(content.as_bytes()).ok()?;
+        return raw_name.strip_prefix('$').map(str::to_string);
+    }
+
+    let variable = first_descendant_kind(name_node, "variable_name")?;
+    let raw_name = variable.utf8_text(content.as_bytes()).ok()?;
+    raw_name.strip_prefix('$').map(str::to_string)
+}
+
+fn map_assigned_property_type(content: &str, node: Node<'_>, types: &mut InstanceTypes) {
+    let Some(left) = node.child_by_field_name("left") else {
+        return;
+    };
+    let Some(right) = node.child_by_field_name("right") else {
+        return;
+    };
+    let Some(property) = this_property_name(content, left) else {
+        return;
+    };
+    let Some(variable) = variable_receiver_name(content, right) else {
+        return;
+    };
+    let Some(fqcn) = types.variables.get(&variable).cloned() else {
+        return;
+    };
+
+    types.properties.insert(property, fqcn);
+}
+
+fn parse_instance_method_call(content: &str, node: Node<'_>) -> Option<InstanceMethodCall> {
+    let name_node = node.child_by_field_name("name")?;
+    if name_node.kind() != "name" {
+        return None;
+    }
+
+    let method_name = name_node.utf8_text(content.as_bytes()).ok()?.to_string();
+    let object_node = node.child_by_field_name("object")?;
+    let receiver = match object_node.kind() {
+        "member_access_expression" | "nullsafe_member_access_expression" => {
+            InstanceReceiver::Property(this_property_name(content, object_node)?)
+        }
+        "variable_name" => {
+            InstanceReceiver::Variable(variable_receiver_name(content, object_node)?)
+        }
+        _ => return None,
+    };
+
+    Some(InstanceMethodCall {
+        receiver,
+        method_name,
+        method_offset: name_node.start_byte(),
+    })
+}
+
+fn this_property_name(content: &str, node: Node<'_>) -> Option<String> {
+    let name_node = node.child_by_field_name("name")?;
+    if name_node.kind() != "name" {
+        return None;
+    }
+
+    let object_node = node.child_by_field_name("object")?;
+    let object_name = object_node.utf8_text(content.as_bytes()).ok()?;
+    if object_name != "$this" {
+        return None;
+    }
+
+    Some(name_node.utf8_text(content.as_bytes()).ok()?.to_string())
+}
+
+fn variable_receiver_name(content: &str, node: Node<'_>) -> Option<String> {
+    if node.kind() != "variable_name" {
+        return None;
+    }
+
+    node.utf8_text(content.as_bytes())
+        .ok()?
+        .strip_prefix('$')
+        .map(str::to_string)
 }
 
 fn emit_static_access_usages(content: &str, context: &PhpContext, sink: &mut FactSink<'_>) {
@@ -1629,6 +1893,76 @@ final class Demo
             &facts,
             "php:method:Shopware\\Core\\Framework\\Uuid\\Uuid::randomHex"
         ));
+    }
+
+    #[test]
+    fn extracts_instance_method_calls_from_promoted_properties() {
+        let facts = usage_facts(
+            r#"<?php
+namespace Swag\Demo;
+
+use Shopware\Core\Checkout\Document\Service\DocumentGenerator;
+
+final class Demo
+{
+    public function __construct(private readonly DocumentGenerator $documentGenerator)
+    {
+    }
+
+    public function test(): void
+    {
+        $this->documentGenerator->generate([], []);
+    }
+}
+"#,
+        );
+
+        assert!(has_surface(
+            &facts,
+            "php:method:Shopware\\Core\\Checkout\\Document\\Service\\DocumentGenerator::generate"
+        ));
+    }
+
+    #[test]
+    fn extracts_instance_method_calls_from_typed_properties_and_assignments() {
+        let facts = usage_facts(
+            r#"<?php
+namespace Swag\Demo;
+
+use Shopware\Core\Checkout\Document\Service\DocumentGenerator;
+
+final class Demo
+{
+    private DocumentGenerator $documentGenerator;
+
+    private $fallbackGenerator;
+
+    public function __construct(DocumentGenerator $documentGenerator)
+    {
+        $this->documentGenerator = $documentGenerator;
+        $this->fallbackGenerator = $documentGenerator;
+    }
+
+    public function test(DocumentGenerator $documentGenerator): void
+    {
+        $this->documentGenerator->generate([], []);
+        $this->fallbackGenerator->generate([], []);
+        $documentGenerator->generate([], []);
+    }
+}
+"#,
+        );
+
+        let matches = facts
+            .iter()
+            .filter(|fact| {
+                fact.surface.as_str()
+                    == "php:method:Shopware\\Core\\Checkout\\Document\\Service\\DocumentGenerator::generate"
+                    && fact.usage_kind == "instance-call"
+            })
+            .count();
+
+        assert_eq!(matches, 3);
     }
 
     #[test]
