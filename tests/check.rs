@@ -114,7 +114,10 @@ class CartService
         ))
         .stdout(predicate::str::contains("change: removed"))
         .stdout(predicate::str::contains("affected plugins: 1"))
-        .stdout(predicate::str::contains("swag/cart"));
+        .stdout(predicate::str::contains("swag/cart"))
+        .stdout(predicate::str::contains(
+            "https://github.com/shopware/store-plugin-mirror/blob/main/plugins/shopware6/plugin/SwagCart/src/CartSubscriber.php#L",
+        ));
 }
 
 fn git<const N: usize>(repo: &Path, args: [&str; N]) -> std::io::Result<()> {

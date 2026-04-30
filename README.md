@@ -21,6 +21,9 @@ cargo run -- index \
   --out .sw-impact/plugins.sqlite
 ```
 
+The command prints a completion line with runtime, indexed plugin count,
+candidate file count, and stored evidence count.
+
 Check a local Shopware worktree:
 
 ```bash
@@ -43,6 +46,7 @@ cargo run -- query \
 - Plugin corpus walking with default excludes and conservative prefiltering.
 - SQLite index creation with plugin, file, surface, impact, evidence, and metadata tables.
 - Exact surface queries with file/line evidence.
+- GitHub source links for store-plugin-mirror paths.
 - Local Shopware worktree checks including committed, staged, unstaged, and untracked files.
 - PHP extraction for imports, FQCNs, static calls, type hints, service strings, route strings, DAL entities, and definitions.
 - Twig extraction for templates, blocks, includes, `path()`, and `seoUrl()`.
@@ -54,4 +58,5 @@ cargo run -- query \
 - The report is touch evidence, not proof of breakage.
 - PHP analysis is per-file and does not perform whole-program type inference.
 - Administration extraction is currently literal/scanner-based; deeper Oxc AST extraction is still a follow-up.
+- PHP extraction currently combines tree-sitter parsing with targeted scanners; moving more extraction onto AST queries is a follow-up hardening task.
 - Low-confidence facts are excluded unless `--include-low-confidence` is used.

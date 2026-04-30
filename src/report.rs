@@ -3,6 +3,7 @@ use std::fmt::Write;
 use std::path::PathBuf;
 
 use crate::model::{ChangedSurface, Confidence};
+use crate::source_link::store_plugin_mirror_url;
 
 #[derive(Debug, Clone)]
 pub struct ImpactReport {
@@ -122,6 +123,8 @@ pub fn format_human_report(report: &ImpactReport) -> String {
             {
                 writeln!(output, "    {}", snippet).unwrap();
             }
+
+            writeln!(output, "    GitHub: {}", evidence.github_url()).unwrap();
         }
 
         let hidden = impact.usage_count.saturating_sub(impact.evidence.len());
@@ -164,6 +167,16 @@ fn evidence_location(evidence: &ImpactEvidence) -> String {
     }
 
     location
+}
+
+impl ImpactEvidence {
+    fn github_url(&self) -> String {
+        store_plugin_mirror_url(
+            &self.plugin_path.to_string_lossy(),
+            &self.file_path,
+            self.line,
+        )
+    }
 }
 
 fn title_case(value: &str) -> String {

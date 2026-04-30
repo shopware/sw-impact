@@ -4,6 +4,7 @@ pub mod extract;
 pub mod git;
 pub mod model;
 pub mod report;
+pub mod source_link;
 pub mod storage;
 pub mod walker;
 

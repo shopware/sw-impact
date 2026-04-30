@@ -2,6 +2,7 @@ use std::fs;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use rusqlite::Connection;
 use tempfile::tempdir;
 
 #[test]
@@ -51,7 +52,30 @@ final class CartSubscriber
             index.to_str().expect("utf-8 index path"),
         ])
         .assert()
-        .success();
+        .success()
+        .stderr(predicate::str::contains("Indexed 1 plugins"))
+        .stderr(predicate::str::contains(" in "));
+
+    let connection = Connection::open(&index).expect("open generated index");
+    let plugin_path: String = connection
+        .query_row(
+            "select path from plugin where name = 'swag/cart'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("plugin path");
+    let corpus_root: String = connection
+        .query_row(
+            "select value from metadata where key = 'corpus_root'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("corpus root metadata");
+
+    assert_eq!(plugin_path, "SwagCart");
+    assert_eq!(corpus_root, "plugins");
+    assert!(!plugin_path.contains(temp.path().to_string_lossy().as_ref()));
+    assert!(!corpus_root.contains(temp.path().to_string_lossy().as_ref()));
 
     Command::cargo_bin("sw-impact")
         .expect("binary exists")
@@ -65,5 +89,8 @@ final class CartSubscriber
         .success()
         .stdout(predicate::str::contains("Affected plugins: 1"))
         .stdout(predicate::str::contains("swag/cart"))
-        .stdout(predicate::str::contains("src/CartSubscriber.php"));
+        .stdout(predicate::str::contains("src/CartSubscriber.php"))
+        .stdout(predicate::str::contains(
+            "https://github.com/shopware/store-plugin-mirror/blob/main/plugins/shopware6/plugin/SwagCart/src/CartSubscriber.php#L",
+        ));
 }

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags, Transaction, params};
@@ -9,11 +9,13 @@ use rusqlite::{Connection, OpenFlags, Transaction, params};
 use crate::cli::{IndexArgs, QueryArgs};
 use crate::extract::extract_facts;
 use crate::model::{Confidence, FactRole};
+use crate::source_link::store_plugin_mirror_url;
 use crate::walker::{CandidateFile, WalkStats, discover_candidates};
 
 const SCHEMA_VERSION: i64 = 1;
 
 pub fn build_index(args: IndexArgs, verbose: bool) -> Result<()> {
+    let started_at = Instant::now();
     prepare_output_location(&args.out, args.force)?;
 
     let (candidates, walk_stats) =
@@ -52,6 +54,8 @@ pub fn build_index(args: IndexArgs, verbose: bool) -> Result<()> {
     if verbose {
         print_index_summary(&args.out, &summary);
     }
+
+    print_index_duration(&args.out, &summary, started_at.elapsed());
 
     Ok(())
 }
@@ -105,6 +109,7 @@ struct QueryResult {
 #[derive(Debug, PartialEq, Eq)]
 struct QueryEvidence {
     plugin_name: String,
+    plugin_folder: String,
     file_path: String,
     line: usize,
     column: Option<usize>,
@@ -282,7 +287,7 @@ fn insert_index_data(
         )?;
 
         for candidate in candidates {
-            let plugin_path = path_to_string(&candidate.plugin.root);
+            let plugin_path = plugin_folder(&candidate.plugin.root);
             let plugin_key = (
                 candidate.plugin.name.clone(),
                 candidate.plugin.version.clone(),
@@ -413,7 +418,7 @@ fn insert_metadata(
     let metadata = [
         ("schema_version", SCHEMA_VERSION.to_string()),
         ("created_at_unix", created_at),
-        ("corpus_root", path_to_string(&args.plugins)),
+        ("corpus_root", path_file_name(&args.plugins)),
         (
             "include_low_confidence",
             args.include_low_confidence.to_string(),
@@ -472,6 +477,7 @@ fn query_surface(
         "
         select
             p.name,
+            p.path,
             f.path,
             e.line,
             e.column,
@@ -494,14 +500,15 @@ fn query_surface(
         .query_map(
             params![surface, min_confidence, require_high, max_evidence],
             |row| {
-                let confidence: i64 = row.get(6)?;
+                let confidence: i64 = row.get(7)?;
                 Ok(QueryEvidence {
                     plugin_name: row.get(0)?,
-                    file_path: row.get(1)?,
-                    line: i64_to_usize(row.get(2)?),
-                    column: row.get::<_, Option<i64>>(3)?.map(i64_to_usize),
-                    usage_kind: row.get(4)?,
-                    snippet: row.get(5)?,
+                    plugin_folder: row.get(1)?,
+                    file_path: row.get(2)?,
+                    line: i64_to_usize(row.get(3)?),
+                    column: row.get::<_, Option<i64>>(4)?.map(i64_to_usize),
+                    usage_kind: row.get(5)?,
+                    snippet: row.get(6)?,
                     confidence: Confidence::from_i64(confidence),
                 })
             },
@@ -533,6 +540,17 @@ fn print_index_summary(out: &Path, summary: &BuildSummary) {
         summary.surface_rows,
         summary.plugin_rows,
         summary.impact_rows,
+    );
+}
+
+fn print_index_duration(out: &Path, summary: &BuildSummary, elapsed: Duration) {
+    eprintln!(
+        "Indexed {} plugins, {} candidate files, and {} evidence rows into {} in {}.",
+        summary.plugin_rows,
+        summary.candidates,
+        summary.evidence_rows,
+        path_display(out),
+        format_duration(elapsed),
     );
 }
 
@@ -598,6 +616,12 @@ fn print_query_result(result: &QueryResult) {
         {
             println!("{}{}", " ".repeat(plugin_width + 2), snippet);
         }
+
+        println!(
+            "{}GitHub: {}",
+            " ".repeat(plugin_width + 2),
+            evidence.github_url()
+        );
     }
 }
 
@@ -607,6 +631,10 @@ impl QueryEvidence {
             Some(column) => format!("{}:{}:{}", self.file_path, self.line, column),
             None => format!("{}:{}", self.file_path, self.line),
         }
+    }
+
+    fn github_url(&self) -> String {
+        store_plugin_mirror_url(&self.plugin_folder, Path::new(&self.file_path), self.line)
     }
 }
 
@@ -626,8 +654,33 @@ fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+fn path_file_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| path_display(path))
+}
+
 fn path_display(path: &Path) -> String {
     path.display().to_string()
+}
+
+fn plugin_folder(path: &Path) -> String {
+    path_file_name(path)
+}
+
+fn format_duration(duration: Duration) -> String {
+    let total_millis = duration.as_millis();
+    let minutes = total_millis / 60_000;
+    let seconds = (total_millis % 60_000) / 1_000;
+    let millis = total_millis % 1_000;
+
+    if minutes > 0 {
+        format!("{minutes}m {seconds}.{millis:03}s")
+    } else {
+        format!("{seconds}.{millis:03}s")
+    }
 }
 
 fn read_candidate_content(path: &Path) -> Result<String> {
@@ -716,13 +769,13 @@ mod tests {
 
         transaction
             .execute(
-                "insert into plugin (id, name, version, path) values (1, 'PluginA', null, '/plugin-a')",
+                "insert into plugin (id, name, version, path) values (1, 'PluginA', null, 'PluginA')",
                 [],
             )
             .expect("insert plugin a");
         transaction
             .execute(
-                "insert into plugin (id, name, version, path) values (2, 'PluginB', null, '/plugin-b')",
+                "insert into plugin (id, name, version, path) values (2, 'PluginB', null, 'PluginB')",
                 [],
             )
             .expect("insert plugin b");
