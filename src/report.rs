@@ -160,13 +160,7 @@ fn plugin_label(evidence: &ImpactEvidence) -> String {
 }
 
 fn evidence_location(evidence: &ImpactEvidence) -> String {
-    let mut location = format!("{}:{}", evidence.file_path.display(), evidence.line);
-
-    if let Some(column) = evidence.column {
-        write!(location, ":{column}").unwrap();
-    }
-
-    location
+    format!("{}:{}", evidence.file_path.display(), evidence.line)
 }
 
 impl ImpactEvidence {

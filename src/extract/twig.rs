@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::OnceLock;
 
 use regex::Regex;
 
@@ -38,9 +39,7 @@ fn extract_blocks(
     include_snippets: bool,
     facts: &mut FactCollector,
 ) {
-    let block_regex = Regex::new(r"\{%-?\s*block\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
-
-    for captures in block_regex.captures_iter(content) {
+    for captures in block_re().captures_iter(content) {
         let Some(block_match) = captures.get(1) else {
             continue;
         };
@@ -73,11 +72,7 @@ fn extract_template_references(
     include_snippets: bool,
     facts: &mut FactCollector,
 ) {
-    let tag_regex =
-        Regex::new(r"(?s)\{%-?\s*(sw_extends|extends|sw_include|include)\b(.*?)%}").unwrap();
-    let string_regex = Regex::new(r#"'([^']+)'|"([^"]+)""#).unwrap();
-
-    for captures in tag_regex.captures_iter(content) {
+    for captures in template_tag_re().captures_iter(content) {
         let Some(tag_match) = captures.get(1) else {
             continue;
         };
@@ -85,7 +80,7 @@ fn extract_template_references(
             continue;
         };
 
-        for string_captures in string_regex.captures_iter(body_match.as_str()) {
+        for string_captures in string_re().captures_iter(body_match.as_str()) {
             let Some(template_match) = string_captures.get(1).or_else(|| string_captures.get(2))
             else {
                 continue;
@@ -115,9 +110,7 @@ fn extract_route_references(
     include_snippets: bool,
     facts: &mut FactCollector,
 ) {
-    let route_regex = Regex::new(r#"\b(path|seoUrl)\s*\(\s*(?:'([^']+)'|"([^"]+)")"#).unwrap();
-
-    for captures in route_regex.captures_iter(content) {
+    for captures in route_re().captures_iter(content) {
         let Some(function_match) = captures.get(1) else {
             continue;
         };
@@ -142,6 +135,28 @@ fn extract_route_references(
             format!("twig.route.{}", function_match.as_str()),
         );
     }
+}
+
+fn block_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\{%-?\s*block\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap())
+}
+
+fn template_tag_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?s)\{%-?\s*(sw_extends|extends|sw_include|include)\b(.*?)%}").unwrap()
+    })
+}
+
+fn string_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"'([^']+)'|"([^"]+)""#).unwrap())
+}
+
+fn route_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"\b(path|seoUrl)\s*\(\s*(?:'([^']+)'|"([^"]+)")"#).unwrap())
 }
 
 fn template_name_from_path(relative_path: &Path) -> Option<String> {

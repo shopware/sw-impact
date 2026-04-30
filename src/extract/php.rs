@@ -1,14 +1,13 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::OnceLock;
 
 use anyhow::{Result, anyhow};
 use regex::Regex;
-use tree_sitter::Parser;
+use tree_sitter::{Node, Parser, Tree};
 
-use crate::model::{
-    Confidence, Evidence, Fact, FactRole, Parameter, Signature, line_col_at, line_snippet,
-};
+use crate::model::{Confidence, Evidence, Fact, FactRole, LineIndex, Parameter, Signature};
 
 pub fn extract(
     content: &str,
@@ -16,34 +15,55 @@ pub fn extract(
     role: FactRole,
     include_snippets: bool,
 ) -> Result<Vec<Fact>> {
-    parse_php(content)?;
-
     let context = PhpContext::build(content);
+    let tree = if role == FactRole::Usage && should_parse_usage_ast(content, &context) {
+        parse_php(content)?
+    } else {
+        None
+    };
     let mut sink = FactSink::new(content, relative_path, include_snippets);
 
     match role {
-        FactRole::Usage => extract_usages(content, &context, &mut sink),
+        FactRole::Usage => extract_usages(content, tree.as_ref(), &context, &mut sink),
         FactRole::Definition => extract_definitions(content, &context, &mut sink),
     }
 
     Ok(sink.into_vec())
 }
 
-fn parse_php(content: &str) -> Result<()> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
-        .map_err(|error| anyhow!("failed to load PHP parser: {error}"))?;
+fn should_parse_usage_ast(content: &str, context: &PhpContext) -> bool {
+    content.contains("Shopware\\")
+        || context
+            .import_facts
+            .iter()
+            .any(|import| is_shopware_fqcn(&import.fqcn))
+}
 
-    let _tree = parser.parse(content, None);
-    Ok(())
+fn parse_php(content: &str) -> Result<Option<Tree>> {
+    thread_local! {
+        static PARSER: RefCell<Option<Parser>> = const { RefCell::new(None) };
+    }
+
+    PARSER.with(|parser| {
+        let mut parser = parser.borrow_mut();
+        if parser.is_none() {
+            let mut initialized = Parser::new();
+            initialized
+                .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+                .map_err(|error| anyhow!("failed to load PHP parser: {error}"))?;
+            *parser = Some(initialized);
+        }
+
+        Ok(parser
+            .as_mut()
+            .and_then(|parser| parser.parse(content, None)))
+    })
 }
 
 #[derive(Debug, Clone)]
 struct Import {
     alias: String,
     fqcn: String,
-    offset: usize,
 }
 
 #[derive(Debug, Default)]
@@ -123,6 +143,7 @@ struct FactSink<'a> {
     content: &'a str,
     path: &'a Path,
     include_snippets: bool,
+    line_index: LineIndex,
     facts: Vec<Fact>,
     seen: HashSet<(String, FactRole, usize, Option<usize>)>,
 }
@@ -133,6 +154,7 @@ impl<'a> FactSink<'a> {
             content,
             path,
             include_snippets,
+            line_index: LineIndex::new(content),
             facts: Vec::new(),
             seen: HashSet::new(),
         }
@@ -188,7 +210,7 @@ impl<'a> FactSink<'a> {
 
     fn evidence(&self, offset: usize) -> Evidence {
         let safe_offset = offset.min(self.content.len());
-        let (line, column) = line_col_at(self.content, safe_offset);
+        let (line, column) = self.line_index.line_col(self.content, safe_offset);
 
         Evidence {
             path: self.path.to_path_buf(),
@@ -196,7 +218,7 @@ impl<'a> FactSink<'a> {
             column: Some(column),
             snippet: self
                 .include_snippets
-                .then(|| line_snippet(self.content, line))
+                .then(|| self.line_index.snippet(self.content, line))
                 .flatten(),
         }
     }
@@ -211,28 +233,28 @@ struct ClassSpan {
     body_end: usize,
 }
 
-fn extract_usages(content: &str, context: &PhpContext, sink: &mut FactSink<'_>) {
-    for import in &context.import_facts {
-        if is_shopware_fqcn(&import.fqcn) {
-            sink.usage(
-                format!("php:class:{}", import.fqcn),
-                import.offset,
-                Confidence::High,
-                "import",
-            );
-        }
+fn extract_usages(
+    content: &str,
+    tree: Option<&Tree>,
+    context: &PhpContext,
+    sink: &mut FactSink<'_>,
+) {
+    if let Some(tree) = tree {
+        emit_ast_class_usages(content, tree.root_node(), context, sink);
     }
+    if content.contains("::") {
+        emit_static_access_usages(content, context, sink);
+    }
+    if may_contain_string_literal(content) {
+        emit_string_usages(content, sink);
+    }
+}
 
-    let class_spans = extract_class_spans(content, context);
-
-    emit_static_access_usages(content, context, sink);
-    emit_new_expression_usages(content, context, sink);
-    emit_inheritance_usages(content, context, sink);
-    emit_trait_usages(content, context, &class_spans, sink);
-    emit_attribute_usages(content, context, sink);
-    emit_type_hint_usages(content, context, sink);
-    emit_direct_shopware_fqcn_usages(content, sink);
-    emit_string_usages(content, sink);
+fn may_contain_string_literal(content: &str) -> bool {
+    content
+        .as_bytes()
+        .iter()
+        .any(|byte| matches!(byte, b'\'' | b'"'))
 }
 
 fn extract_definitions(content: &str, context: &PhpContext, sink: &mut FactSink<'_>) {
@@ -281,13 +303,13 @@ fn extract_imports(content: &str) -> Vec<Import> {
             continue;
         }
 
-        parse_import_body(body.as_str(), body.start(), &mut imports);
+        parse_import_body(body.as_str(), &mut imports);
     }
 
     imports
 }
 
-fn parse_import_body(body: &str, body_offset: usize, imports: &mut Vec<Import>) {
+fn parse_import_body(body: &str, imports: &mut Vec<Import>) {
     let trimmed = body.trim();
 
     if let (Some(open), Some(close)) = (trimmed.find('{'), trimmed.rfind('}'))
@@ -295,32 +317,20 @@ fn parse_import_body(body: &str, body_offset: usize, imports: &mut Vec<Import>) 
     {
         let prefix = trimmed[..open].trim().trim_end_matches('\\').to_string();
         let inner = &trimmed[open + 1..close];
-        let trimmed_offset = body_offset + body.find(trimmed).unwrap_or(0);
-        let inner_offset = trimmed_offset + open + 1;
 
-        for (item_offset, item) in split_top_level_with_offsets(inner, ',') {
-            parse_import_item(
-                item,
-                Some(prefix.as_str()),
-                inner_offset + item_offset,
-                imports,
-            );
+        for (_, item) in split_top_level_with_offsets(inner, ',') {
+            parse_import_item(item, Some(prefix.as_str()), imports);
         }
 
         return;
     }
 
-    for (item_offset, item) in split_top_level_with_offsets(body, ',') {
-        parse_import_item(item, None, body_offset + item_offset, imports);
+    for (_, item) in split_top_level_with_offsets(body, ',') {
+        parse_import_item(item, None, imports);
     }
 }
 
-fn parse_import_item(
-    item: &str,
-    prefix: Option<&str>,
-    item_offset: usize,
-    imports: &mut Vec<Import>,
-) {
+fn parse_import_item(item: &str, prefix: Option<&str>, imports: &mut Vec<Import>) {
     let item = item.trim();
 
     if item.is_empty()
@@ -355,12 +365,118 @@ fn parse_import_item(
         .and_then(clean_php_name)
         .unwrap_or_else(|| last_name_segment(&fqcn).to_string());
 
-    let offset = item_offset + leading_whitespace_len(item);
-    imports.push(Import {
-        alias,
-        fqcn,
-        offset,
-    });
+    imports.push(Import { alias, fqcn });
+}
+
+fn emit_ast_class_usages(
+    content: &str,
+    root: Node<'_>,
+    context: &PhpContext,
+    sink: &mut FactSink<'_>,
+) {
+    let mut cursor = root.walk();
+    let mut stack = vec![root];
+    let first_type_declaration = first_type_declaration_offset(content).unwrap_or(usize::MAX);
+
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "object_creation_expression" => {
+                emit_first_direct_ast_class_reference(content, node, context, sink, "new");
+            }
+            "base_clause" => {
+                emit_direct_ast_class_references(content, node, context, sink, "base-clause");
+            }
+            "named_type" => {
+                emit_direct_ast_class_references(content, node, context, sink, "type-hint");
+            }
+            "attribute" => {
+                emit_first_direct_ast_class_reference(content, node, context, sink, "attribute");
+            }
+            "use_declaration" if node.start_byte() > first_type_declaration => {
+                emit_direct_ast_class_references(content, node, context, sink, "trait-use");
+            }
+            _ => {}
+        }
+
+        for child in node.children(&mut cursor) {
+            if child.is_named() {
+                stack.push(child);
+            }
+        }
+    }
+}
+
+fn emit_first_direct_ast_class_reference(
+    content: &str,
+    node: Node<'_>,
+    context: &PhpContext,
+    sink: &mut FactSink<'_>,
+    usage_kind: &str,
+) {
+    let mut cursor = node.walk();
+
+    for child in node.named_children(&mut cursor) {
+        if emit_ast_class_reference(content, child, context, sink, usage_kind) {
+            break;
+        }
+    }
+}
+
+fn emit_direct_ast_class_references(
+    content: &str,
+    node: Node<'_>,
+    context: &PhpContext,
+    sink: &mut FactSink<'_>,
+    usage_kind: &str,
+) {
+    let mut cursor = node.walk();
+
+    for child in node.named_children(&mut cursor) {
+        if !emit_ast_class_reference(content, child, context, sink, usage_kind)
+            && matches!(child.kind(), "use_list")
+        {
+            emit_ast_class_reference_descendants(content, child, context, sink, usage_kind);
+        }
+    }
+}
+
+fn emit_ast_class_reference_descendants(
+    content: &str,
+    root: Node<'_>,
+    context: &PhpContext,
+    sink: &mut FactSink<'_>,
+    usage_kind: &str,
+) {
+    let mut stack = vec![root];
+
+    while let Some(node) = stack.pop() {
+        if emit_ast_class_reference(content, node, context, sink, usage_kind) {
+            continue;
+        }
+
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+}
+
+fn emit_ast_class_reference(
+    content: &str,
+    node: Node<'_>,
+    context: &PhpContext,
+    sink: &mut FactSink<'_>,
+    usage_kind: &str,
+) -> bool {
+    if !matches!(node.kind(), "name" | "qualified_name" | "relative_name") {
+        return false;
+    }
+
+    if let Ok(raw_name) = node.utf8_text(content.as_bytes()) {
+        emit_shopware_class_usage(context, sink, raw_name, node.start_byte(), usage_kind);
+    }
+
+    true
 }
 
 fn emit_static_access_usages(content: &str, context: &PhpContext, sink: &mut FactSink<'_>) {
@@ -414,158 +530,6 @@ fn emit_static_access_usages(content: &str, context: &PhpContext, sink: &mut Fac
                 member.start(),
                 Confidence::High,
                 "static-call",
-            );
-        }
-    }
-}
-
-fn emit_new_expression_usages(content: &str, context: &PhpContext, sink: &mut FactSink<'_>) {
-    for capture in new_expression_re().captures_iter(content) {
-        let Some(name) = capture.get(1) else {
-            continue;
-        };
-
-        emit_shopware_class_usage(context, sink, name.as_str(), name.start(), "new");
-    }
-}
-
-fn emit_inheritance_usages(content: &str, context: &PhpContext, sink: &mut FactSink<'_>) {
-    for capture in class_header_re().captures_iter(content) {
-        let Some(tail) = capture.get(1) else {
-            continue;
-        };
-
-        let tail_text = tail.as_str();
-        emit_clause_class_names(tail_text, tail.start(), "extends", context, sink);
-        emit_clause_class_names(tail_text, tail.start(), "implements", context, sink);
-    }
-}
-
-fn emit_clause_class_names(
-    tail: &str,
-    tail_offset: usize,
-    keyword: &str,
-    context: &PhpContext,
-    sink: &mut FactSink<'_>,
-) {
-    let Some(keyword_pos) = find_keyword(tail, keyword) else {
-        return;
-    };
-
-    let after_keyword = keyword_pos + keyword.len();
-    let mut end = tail.len();
-
-    for stop_keyword in ["extends", "implements"] {
-        if stop_keyword == keyword {
-            continue;
-        }
-        if let Some(stop) = find_keyword(&tail[after_keyword..], stop_keyword) {
-            end = end.min(after_keyword + stop);
-        }
-    }
-
-    let clause = &tail[after_keyword..end];
-    let clause_offset = tail_offset + after_keyword;
-    emit_class_names_from_segment(clause, clause_offset, keyword, context, sink);
-}
-
-fn emit_trait_usages(
-    content: &str,
-    context: &PhpContext,
-    class_spans: &[ClassSpan],
-    sink: &mut FactSink<'_>,
-) {
-    for class_span in class_spans {
-        let body = &content[class_span.body_start..class_span.body_end];
-
-        for capture in trait_use_re().captures_iter(body) {
-            let Some(names) = capture.get(1) else {
-                continue;
-            };
-
-            let usage_offset = class_span.body_start + capture.get(0).unwrap().start();
-            if !is_direct_class_member(content, class_span.body_start, usage_offset) {
-                continue;
-            }
-
-            emit_class_names_from_segment(
-                names.as_str(),
-                class_span.body_start + names.start(),
-                "trait-use",
-                context,
-                sink,
-            );
-        }
-    }
-}
-
-fn emit_attribute_usages(content: &str, context: &PhpContext, sink: &mut FactSink<'_>) {
-    for capture in attribute_block_re().captures_iter(content) {
-        let Some(block) = capture.get(1) else {
-            continue;
-        };
-
-        for name in class_name_token_re().find_iter(block.as_str()) {
-            emit_shopware_class_usage(
-                context,
-                sink,
-                name.as_str(),
-                block.start() + name.start(),
-                "attribute",
-            );
-        }
-    }
-}
-
-fn emit_type_hint_usages(content: &str, context: &PhpContext, sink: &mut FactSink<'_>) {
-    for capture in function_signature_start_re().captures_iter(content) {
-        let Some(start_match) = capture.get(0) else {
-            continue;
-        };
-
-        let Some(open_paren) = content[start_match.end().saturating_sub(1)..]
-            .find('(')
-            .map(|offset| start_match.end().saturating_sub(1) + offset)
-        else {
-            continue;
-        };
-
-        let Some(close_paren) = find_matching_delimiter(content, open_paren, b'(', b')') else {
-            continue;
-        };
-
-        let params = &content[open_paren + 1..close_paren];
-        for (parameter_offset, parameter) in split_top_level_with_offsets(params, ',') {
-            if let Some((type_name, type_offset)) =
-                parameter_type_part(parameter, open_paren + 1 + parameter_offset)
-            {
-                emit_class_names_from_type(&type_name, type_offset, context, sink);
-            }
-        }
-
-        if let Some((return_type, return_type_offset)) = return_type_after(content, close_paren) {
-            emit_class_names_from_type(&return_type, return_type_offset, context, sink);
-        }
-    }
-
-    for capture in property_type_re().captures_iter(content) {
-        let Some(type_name) = capture.get(1) else {
-            continue;
-        };
-
-        emit_class_names_from_type(type_name.as_str(), type_name.start(), context, sink);
-    }
-}
-
-fn emit_direct_shopware_fqcn_usages(content: &str, sink: &mut FactSink<'_>) {
-    for found in shopware_fqcn_re().find_iter(content) {
-        let fqcn = found.as_str().trim_start_matches('\\');
-        if is_valid_php_name(fqcn) {
-            sink.usage(
-                format!("php:class:{fqcn}"),
-                found.start(),
-                Confidence::High,
-                "fqcn",
             );
         }
     }
@@ -625,41 +589,6 @@ fn emit_string_usages(content: &str, sink: &mut FactSink<'_>) {
                 "entity-string",
             );
         }
-    }
-}
-
-fn emit_class_names_from_segment(
-    segment: &str,
-    segment_offset: usize,
-    usage_kind: &str,
-    context: &PhpContext,
-    sink: &mut FactSink<'_>,
-) {
-    for name in class_name_token_re().find_iter(segment) {
-        emit_shopware_class_usage(
-            context,
-            sink,
-            name.as_str(),
-            segment_offset + name.start(),
-            usage_kind,
-        );
-    }
-}
-
-fn emit_class_names_from_type(
-    type_name: &str,
-    type_offset: usize,
-    context: &PhpContext,
-    sink: &mut FactSink<'_>,
-) {
-    for token in type_token_re().find_iter(type_name) {
-        emit_shopware_class_usage(
-            context,
-            sink,
-            token.as_str(),
-            type_offset + token.start(),
-            "type-hint",
-        );
     }
 }
 
@@ -1350,7 +1279,7 @@ fn last_name_segment(name: &str) -> &str {
 }
 
 fn is_shopware_fqcn(name: &str) -> bool {
-    name == "Shopware" || name.starts_with("Shopware\\")
+    name.starts_with("Shopware\\")
 }
 
 fn is_primitive_type(name: &str) -> bool {
@@ -1385,28 +1314,6 @@ fn starts_with_keyword(input: &str, keyword: &str) -> bool {
             .chars()
             .next()
             .is_none_or(|ch| !is_identifier_char(ch))
-}
-
-fn find_keyword(input: &str, keyword: &str) -> Option<usize> {
-    let lower = input.to_ascii_lowercase();
-    let keyword = keyword.to_ascii_lowercase();
-    let mut start = 0usize;
-
-    while let Some(position) = lower[start..].find(&keyword) {
-        let index = start + position;
-        let before = input[..index].chars().next_back();
-        let after = input[index + keyword.len()..].chars().next();
-
-        if before.is_none_or(|ch| !is_identifier_char(ch))
-            && after.is_none_or(|ch| !is_identifier_char(ch))
-        {
-            return Some(index);
-        }
-
-        start = index + keyword.len();
-    }
-
-    None
 }
 
 fn is_identifier_char(ch: char) -> bool {
@@ -1563,16 +1470,6 @@ fn class_declaration_re() -> &'static Regex {
     })
 }
 
-fn class_header_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?ms)^\s*(?:(?:abstract|final|readonly)\s+)*(?:class|interface|enum)\s+[A-Za-z_][A-Za-z0-9_]*([^{;]*)\{",
-        )
-        .unwrap()
-    })
-}
-
 fn static_access_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -1583,70 +1480,11 @@ fn static_access_re() -> &'static Regex {
     })
 }
 
-fn new_expression_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"\bnew\s+(\\?[A-Z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)*)").unwrap()
-    })
-}
-
-fn trait_use_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?m)^\s*use\s+([A-Z_\\][A-Za-z0-9_\\]*(?:\s*,\s*[A-Z_\\][A-Za-z0-9_\\]*)*)\s*[;{]",
-        )
-        .unwrap()
-    })
-}
-
-fn attribute_block_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?s)#\[(.*?)\]").unwrap())
-}
-
-fn class_name_token_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\\?[A-Z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)*").unwrap())
-}
-
-fn type_token_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"\\?[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)*").unwrap()
-    })
-}
-
-fn shopware_fqcn_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\\?Shopware\\[A-Za-z_][A-Za-z0-9_\\]*").unwrap())
-}
-
-fn function_signature_start_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?m)^\s*(?:(?:public|protected|private|static|abstract|final|readonly)\s+)*function\s+&?\s*[A-Za-z_][A-Za-z0-9_]*\s*\(",
-        )
-        .unwrap()
-    })
-}
-
 fn method_declaration_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
             r"(?m)^\s*(?:(?:public|protected|private|static|abstract|final|readonly)\s+)*function\s+&?\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(",
-        )
-        .unwrap()
-    })
-}
-
-fn property_type_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?m)^\s*(?:(?:public|protected|private|static|readonly|var)\s+)+([?\\A-Z_][A-Za-z0-9_\\|&?\s]*)\s+\$[A-Za-z_][A-Za-z0-9_]*",
         )
         .unwrap()
     })
@@ -1714,7 +1552,7 @@ mod tests {
     }
 
     #[test]
-    fn extracts_shopware_imports() {
+    fn resolves_shopware_imports_in_type_hints() {
         let facts = usage_facts(
             r#"<?php
 namespace Swag\Demo;
@@ -1723,6 +1561,9 @@ use Shopware\Core\Checkout\Cart\CartService;
 
 final class Demo
 {
+    public function __construct(private CartService $cartService)
+    {
+    }
 }
 "#,
         );
@@ -1731,7 +1572,11 @@ final class Demo
             &facts,
             "php:class:Shopware\\Core\\Checkout\\Cart\\CartService"
         ));
-        assert!(facts.iter().any(|fact| fact.confidence == Confidence::High));
+        assert!(
+            facts
+                .iter()
+                .any(|fact| fact.usage_kind == "type-hint" && fact.confidence == Confidence::High)
+        );
     }
 
     #[test]

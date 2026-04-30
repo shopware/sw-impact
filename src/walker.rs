@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use aho_corasick::AhoCorasick;
 use anyhow::{Context, Result, anyhow};
 use ignore::{DirEntry, WalkBuilder};
+use rayon::prelude::*;
 use serde_json::Value;
 
 use crate::cli::IndexArgs;
@@ -89,7 +90,7 @@ pub fn discover_candidates(args: &IndexArgs) -> Result<(Vec<CandidateFile>, Walk
 
     let plugin_roots = discover_plugin_roots(&plugins_root, &excludes)?;
     let plugins = plugin_roots
-        .iter()
+        .par_iter()
         .map(|root| plugin_info_for_root(root))
         .collect::<Vec<_>>();
 
@@ -99,15 +100,31 @@ pub fn discover_candidates(args: &IndexArgs) -> Result<(Vec<CandidateFile>, Walk
     };
     let mut candidates = Vec::new();
 
-    for plugin in plugins {
-        collect_plugin_candidates(
-            &plugin,
-            &excludes,
-            max_file_size,
-            &prefilter,
-            &mut candidates,
-            &mut stats,
-        )?;
+    let plugin_results: Result<Vec<_>> = plugins
+        .into_par_iter()
+        .map(|plugin| {
+            let mut plugin_candidates = Vec::new();
+            let mut plugin_stats = WalkStats::default();
+
+            collect_plugin_candidates(
+                &plugin,
+                &excludes,
+                max_file_size,
+                &prefilter,
+                &mut plugin_candidates,
+                &mut plugin_stats,
+            )?;
+
+            Ok((plugin_candidates, plugin_stats))
+        })
+        .collect();
+
+    for (mut plugin_candidates, plugin_stats) in plugin_results? {
+        stats.files_seen += plugin_stats.files_seen;
+        stats.candidates += plugin_stats.candidates;
+        stats.skipped_large += plugin_stats.skipped_large;
+        stats.skipped_unsupported += plugin_stats.skipped_unsupported;
+        candidates.append(&mut plugin_candidates);
     }
 
     candidates.sort_by(|left, right| {

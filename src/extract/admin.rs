@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::OnceLock;
 
 use regex::Regex;
 
@@ -31,10 +32,7 @@ fn extract_component_calls(
     include_snippets: bool,
     facts: &mut FactCollector,
 ) {
-    let regex =
-        Regex::new(r"\bShopware\s*\.\s*Component\s*\.\s*(override|extend|register)\s*\(").unwrap();
-
-    for captures in regex.captures_iter(content) {
+    for captures in component_call_re().captures_iter(content) {
         let Some(method_match) = captures.get(1) else {
             continue;
         };
@@ -76,10 +74,7 @@ fn extract_module_registers(
     include_snippets: bool,
     facts: &mut FactCollector,
 ) {
-    let regex = Regex::new(r"\bShopware\s*\.\s*Module\s*\.\s*register\s*\(").unwrap();
-    let routes_regex = Regex::new(r"\broutes\s*:\s*\{").unwrap();
-
-    for call_match in regex.find_iter(content) {
+    for call_match in module_register_re().find_iter(content) {
         let open_paren = call_match.end() - 1;
         let Some(close_paren) = find_matching_delimiter(content, open_paren, b'(', b')') else {
             continue;
@@ -99,7 +94,7 @@ fn extract_module_registers(
         );
 
         let call_body = &content[open_paren + 1..close_paren];
-        for routes_match in routes_regex.find_iter(call_body) {
+        for routes_match in routes_object_re().find_iter(call_body) {
             let open_brace = open_paren + 1 + routes_match.end() - 1;
             for route_key in collect_top_level_object_keys(content, open_brace) {
                 facts.push(
@@ -121,9 +116,7 @@ fn extract_repository_factory(
     include_snippets: bool,
     facts: &mut FactCollector,
 ) {
-    let regex = Regex::new(r"\b(?:this\s*\.\s*)?repositoryFactory\s*\.\s*create\s*\(").unwrap();
-
-    for call_match in regex.find_iter(content) {
+    for call_match in repository_factory_re().find_iter(content) {
         let literals = read_string_literals_in_call(content, call_match.end() - 1, 1);
         let Some(entity) = literals.first() else {
             continue;
@@ -148,9 +141,7 @@ fn extract_shopware_services(
     include_snippets: bool,
     facts: &mut FactCollector,
 ) {
-    let regex = Regex::new(r"\bShopware\s*\.\s*Service\s*\(").unwrap();
-
-    for call_match in regex.find_iter(content) {
+    for call_match in service_call_re().find_iter(content) {
         let literals = read_string_literals_in_call(content, call_match.end() - 1, 1);
         let Some(service) = literals.first() else {
             continue;
@@ -173,12 +164,7 @@ fn extract_shopware_state(
     include_snippets: bool,
     facts: &mut FactCollector,
 ) {
-    let call_regex =
-        Regex::new(r"\bShopware\s*\.\s*State(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)?\s*\(").unwrap();
-    let bracket_regex =
-        Regex::new(r"\bShopware\s*\.\s*State\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\[").unwrap();
-
-    for call_match in call_regex.find_iter(content) {
+    for call_match in state_call_re().find_iter(content) {
         let literals = read_string_literals_in_call(content, call_match.end() - 1, 1);
         let Some(store) = literals.first() else {
             continue;
@@ -186,7 +172,7 @@ fn extract_shopware_state(
         emit_state_store(content, relative_path, role, include_snippets, facts, store);
     }
 
-    for bracket_match in bracket_regex.find_iter(content) {
+    for bracket_match in state_bracket_re().find_iter(content) {
         let Some(store) = read_string_literal_at(content, bracket_match.end()) else {
             continue;
         };
@@ -225,37 +211,29 @@ fn extract_route_literals(
     include_snippets: bool,
     facts: &mut FactCollector,
 ) {
-    extract_property_literals(
-        content,
-        r"\b(name|route|routeName|parentPath)\s*:\s*",
-        |literal, property| {
-            if looks_like_admin_route_name(&literal.value) {
-                facts.push(
-                    role,
-                    format!("admin:route:{}", literal.value),
-                    evidence(content, relative_path, literal.start, include_snippets),
-                    Confidence::High,
-                    format!("admin.route.{property}"),
-                );
-            }
-        },
-    );
+    extract_property_literals(content, route_property_re(), |literal, property| {
+        if looks_like_admin_route_name(&literal.value) {
+            facts.push(
+                role,
+                format!("admin:route:{}", literal.value),
+                evidence(content, relative_path, literal.start, include_snippets),
+                Confidence::High,
+                format!("admin.route.{property}"),
+            );
+        }
+    });
 
-    extract_attribute_literals(
-        content,
-        r"[:@]?(name|route|parent-path|parentPath)\s*=\s*",
-        |literal, attribute| {
-            if looks_like_admin_route_name(&literal.value) {
-                facts.push(
-                    role,
-                    format!("admin:route:{}", literal.value),
-                    evidence(content, relative_path, literal.start, include_snippets),
-                    Confidence::Medium,
-                    format!("admin.route.attribute.{attribute}"),
-                );
-            }
-        },
-    );
+    extract_attribute_literals(content, route_attribute_re(), |literal, attribute| {
+        if looks_like_admin_route_name(&literal.value) {
+            facts.push(
+                role,
+                format!("admin:route:{}", literal.value),
+                evidence(content, relative_path, literal.start, include_snippets),
+                Confidence::Medium,
+                format!("admin.route.attribute.{attribute}"),
+            );
+        }
+    });
 }
 
 fn extract_entity_literals(
@@ -265,37 +243,29 @@ fn extract_entity_literals(
     include_snippets: bool,
     facts: &mut FactCollector,
 ) {
-    extract_property_literals(
-        content,
-        r"\b(entity|entityName|sourceEntity|targetEntity)\s*:\s*",
-        |literal, property| {
-            if looks_like_entity_name(&literal.value) {
-                facts.push(
-                    role,
-                    format!("dal:entity:{}", literal.value),
-                    evidence(content, relative_path, literal.start, include_snippets),
-                    Confidence::High,
-                    format!("admin.entity.{property}"),
-                );
-            }
-        },
-    );
+    extract_property_literals(content, entity_property_re(), |literal, property| {
+        if looks_like_entity_name(&literal.value) {
+            facts.push(
+                role,
+                format!("dal:entity:{}", literal.value),
+                evidence(content, relative_path, literal.start, include_snippets),
+                Confidence::High,
+                format!("admin.entity.{property}"),
+            );
+        }
+    });
 
-    extract_attribute_literals(
-        content,
-        r"[:@]?(entity|entity-name|entityName)\s*=\s*",
-        |literal, attribute| {
-            if looks_like_entity_name(&literal.value) {
-                facts.push(
-                    role,
-                    format!("dal:entity:{}", literal.value),
-                    evidence(content, relative_path, literal.start, include_snippets),
-                    Confidence::High,
-                    format!("admin.entity.attribute.{attribute}"),
-                );
-            }
-        },
-    );
+    extract_attribute_literals(content, entity_attribute_re(), |literal, attribute| {
+        if looks_like_entity_name(&literal.value) {
+            facts.push(
+                role,
+                format!("dal:entity:{}", literal.value),
+                evidence(content, relative_path, literal.start, include_snippets),
+                Confidence::High,
+                format!("admin.entity.attribute.{attribute}"),
+            );
+        }
+    });
 }
 
 fn extract_component_literals(
@@ -305,7 +275,7 @@ fn extract_component_literals(
     include_snippets: bool,
     facts: &mut FactCollector,
 ) {
-    extract_property_literals(content, r"\b(component)\s*:\s*", |literal, property| {
+    extract_property_literals(content, component_property_re(), |literal, property| {
         if looks_like_admin_component(&literal.value) {
             facts.push(
                 role,
@@ -317,24 +287,19 @@ fn extract_component_literals(
         }
     });
 
-    extract_attribute_literals(
-        content,
-        r"[:@]?(component|is)\s*=\s*",
-        |literal, attribute| {
-            if looks_like_admin_component(&literal.value) {
-                facts.push(
-                    role,
-                    format!("admin:component:{}", literal.value),
-                    evidence(content, relative_path, literal.start, include_snippets),
-                    Confidence::Medium,
-                    format!("admin.component.attribute.{attribute}"),
-                );
-            }
-        },
-    );
+    extract_attribute_literals(content, component_attribute_re(), |literal, attribute| {
+        if looks_like_admin_component(&literal.value) {
+            facts.push(
+                role,
+                format!("admin:component:{}", literal.value),
+                evidence(content, relative_path, literal.start, include_snippets),
+                Confidence::Medium,
+                format!("admin.component.attribute.{attribute}"),
+            );
+        }
+    });
 
-    let tag_regex = Regex::new(r"</?\s*(sw-[a-z0-9][a-z0-9-]*)\b").unwrap();
-    for captures in tag_regex.captures_iter(content) {
+    for captures in vue_component_tag_re().captures_iter(content) {
         let Some(component) = captures.get(1) else {
             continue;
         };
@@ -349,9 +314,7 @@ fn extract_component_literals(
     }
 }
 
-fn extract_property_literals(content: &str, pattern: &str, mut emit: impl FnMut(&Literal, &str)) {
-    let regex = Regex::new(pattern).unwrap();
-
+fn extract_property_literals(content: &str, regex: &Regex, mut emit: impl FnMut(&Literal, &str)) {
     for captures in regex.captures_iter(content) {
         let Some(property) = captures.get(1) else {
             continue;
@@ -367,9 +330,7 @@ fn extract_property_literals(content: &str, pattern: &str, mut emit: impl FnMut(
     }
 }
 
-fn extract_attribute_literals(content: &str, pattern: &str, mut emit: impl FnMut(&Literal, &str)) {
-    let regex = Regex::new(pattern).unwrap();
-
+fn extract_attribute_literals(content: &str, regex: &Regex, mut emit: impl FnMut(&Literal, &str)) {
     for captures in regex.captures_iter(content) {
         let Some(attribute) = captures.get(1) else {
             continue;
@@ -383,6 +344,86 @@ fn extract_attribute_literals(content: &str, pattern: &str, mut emit: impl FnMut
 
         emit(&literal, attribute.as_str());
     }
+}
+
+fn component_call_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"\bShopware\s*\.\s*Component\s*\.\s*(override|extend|register)\s*\(").unwrap()
+    })
+}
+
+fn module_register_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\bShopware\s*\.\s*Module\s*\.\s*register\s*\(").unwrap())
+}
+
+fn routes_object_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\broutes\s*:\s*\{").unwrap())
+}
+
+fn repository_factory_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"\b(?:this\s*\.\s*)?repositoryFactory\s*\.\s*create\s*\(").unwrap()
+    })
+}
+
+fn service_call_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\bShopware\s*\.\s*Service\s*\(").unwrap())
+}
+
+fn state_call_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"\bShopware\s*\.\s*State(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)?\s*\(").unwrap()
+    })
+}
+
+fn state_bracket_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"\bShopware\s*\.\s*State\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\[").unwrap()
+    })
+}
+
+fn route_property_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\b(name|route|routeName|parentPath)\s*:\s*").unwrap())
+}
+
+fn route_attribute_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"[:@]?(name|route|parent-path|parentPath)\s*=\s*").unwrap())
+}
+
+fn entity_property_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"\b(entity|entityName|sourceEntity|targetEntity)\s*:\s*").unwrap()
+    })
+}
+
+fn entity_attribute_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"[:@]?(entity|entity-name|entityName)\s*=\s*").unwrap())
+}
+
+fn component_property_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\b(component)\s*:\s*").unwrap())
+}
+
+fn component_attribute_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"[:@]?(component|is)\s*=\s*").unwrap())
+}
+
+fn vue_component_tag_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"</?\s*(sw-[a-z0-9][a-z0-9-]*)\b").unwrap())
 }
 
 #[derive(Debug, Clone)]

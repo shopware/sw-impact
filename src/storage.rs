@@ -1,16 +1,17 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use rayon::prelude::*;
 use rusqlite::{Connection, OpenFlags, Transaction, params};
 
 use crate::cli::{IndexArgs, QueryArgs};
 use crate::extract::extract_facts;
-use crate::model::{Confidence, FactRole};
+use crate::model::{Confidence, Fact, FactRole};
 use crate::source_link::store_plugin_mirror_url;
-use crate::walker::{CandidateFile, WalkStats, discover_candidates};
+use crate::walker::{CandidateFile, PluginInfo, WalkStats, discover_candidates};
 
 const SCHEMA_VERSION: i64 = 1;
 
@@ -22,7 +23,9 @@ pub fn build_index(args: IndexArgs, verbose: bool) -> Result<()> {
         discover_candidates(&args).context("discover plugin candidate files")?;
 
     let include_snippets = !args.no_snippets;
+    let extracted_candidates = extract_candidates(candidates, include_snippets, &args.threads)?;
     let mut connection = open_fresh_database(&args.out, args.force)?;
+    configure_bulk_write_database(&connection).context("configure SQLite bulk write settings")?;
     connection
         .pragma_update(None, "foreign_keys", true)
         .context("enable SQLite foreign keys")?;
@@ -36,7 +39,7 @@ pub fn build_index(args: IndexArgs, verbose: bool) -> Result<()> {
         let summary = insert_index_data(
             &transaction,
             &args,
-            candidates,
+            extracted_candidates,
             walk_stats,
             include_snippets,
         )
@@ -98,6 +101,13 @@ struct ImpactAggregate {
     confidence: Confidence,
 }
 
+#[derive(Debug)]
+struct ExtractedCandidate {
+    plugin: PluginInfo,
+    relative_path: PathBuf,
+    facts: Vec<Fact>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct QueryResult {
     surface: String,
@@ -156,6 +166,20 @@ fn open_fresh_database(out: &Path, force: bool) -> Result<Connection> {
     }
 
     Connection::open(out).with_context(|| format!("create SQLite index {}", path_display(out)))
+}
+
+fn configure_bulk_write_database(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "
+        pragma journal_mode = off;
+        pragma synchronous = off;
+        pragma temp_store = memory;
+        pragma locking_mode = exclusive;
+        pragma cache_size = -200000;
+        ",
+    )?;
+
+    Ok(())
 }
 
 fn create_schema(transaction: &Transaction<'_>) -> Result<()> {
@@ -231,10 +255,77 @@ fn create_indexes(transaction: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+fn extract_candidates(
+    candidates: Vec<CandidateFile>,
+    include_snippets: bool,
+    threads: &str,
+) -> Result<Vec<ExtractedCandidate>> {
+    match parse_threads(threads)? {
+        Some(threads) => rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .context("build extraction thread pool")?
+            .install(|| extract_candidates_parallel(candidates, include_snippets)),
+        None => extract_candidates_parallel(candidates, include_snippets),
+    }
+}
+
+fn extract_candidates_parallel(
+    candidates: Vec<CandidateFile>,
+    include_snippets: bool,
+) -> Result<Vec<ExtractedCandidate>> {
+    candidates
+        .into_par_iter()
+        .map(|candidate| extract_candidate(candidate, include_snippets))
+        .collect()
+}
+
+fn extract_candidate(
+    candidate: CandidateFile,
+    include_snippets: bool,
+) -> Result<ExtractedCandidate> {
+    let content = read_candidate_content(&candidate.absolute_path)?;
+    let facts = extract_facts(
+        candidate.language,
+        &content,
+        &candidate.relative_path,
+        FactRole::Usage,
+        include_snippets,
+    )
+    .with_context(|| {
+        format!(
+            "extract facts from candidate file {}",
+            path_display(&candidate.absolute_path)
+        )
+    })?;
+
+    Ok(ExtractedCandidate {
+        plugin: candidate.plugin,
+        relative_path: candidate.relative_path,
+        facts,
+    })
+}
+
+fn parse_threads(value: &str) -> Result<Option<usize>> {
+    if value.eq_ignore_ascii_case("auto") {
+        return Ok(None);
+    }
+
+    let threads = value
+        .parse::<usize>()
+        .with_context(|| format!("invalid thread count: {value}"))?;
+
+    if threads == 0 {
+        bail!("thread count must be greater than zero");
+    }
+
+    Ok(Some(threads))
+}
+
 fn insert_index_data(
     transaction: &Transaction<'_>,
     args: &IndexArgs,
-    candidates: Vec<CandidateFile>,
+    candidates: Vec<ExtractedCandidate>,
     walk_stats: WalkStats,
     include_snippets: bool,
 ) -> Result<BuildSummary> {
@@ -313,24 +404,9 @@ fn insert_index_data(
             ])?;
             let file_id = transaction.last_insert_rowid();
 
-            let content = read_candidate_content(&candidate.absolute_path)?;
-            let facts = extract_facts(
-                candidate.language,
-                &content,
-                &candidate.relative_path,
-                FactRole::Usage,
-                include_snippets,
-            )
-            .with_context(|| {
-                format!(
-                    "extract facts from candidate file {}",
-                    path_display(&candidate.absolute_path)
-                )
-            })?;
+            summary.facts_extracted += candidate.facts.len();
 
-            summary.facts_extracted += facts.len();
-
-            for fact in facts {
+            for fact in candidate.facts {
                 if fact.role != FactRole::Usage
                     || !fact.confidence.include(args.include_low_confidence, false)
                 {
@@ -627,10 +703,7 @@ fn print_query_result(result: &QueryResult) {
 
 impl QueryEvidence {
     fn location(&self) -> String {
-        match self.column {
-            Some(column) => format!("{}:{}:{}", self.file_path, self.line, column),
-            None => format!("{}:{}", self.file_path, self.line),
-        }
+        format!("{}:{}", self.file_path, self.line)
     }
 
     fn github_url(&self) -> String {

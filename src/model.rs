@@ -297,6 +297,63 @@ pub fn line_snippet(content: &str, line: usize) -> Option<String> {
         .map(|line| line.chars().take(240).collect())
 }
 
+#[derive(Debug, Clone)]
+pub struct LineIndex {
+    starts: Vec<usize>,
+}
+
+impl LineIndex {
+    pub fn new(content: &str) -> Self {
+        let mut starts = vec![0];
+
+        for (index, byte) in content.bytes().enumerate() {
+            if byte == b'\n' && index + 1 < content.len() {
+                starts.push(index + 1);
+            }
+        }
+
+        Self { starts }
+    }
+
+    pub fn line_col(&self, content: &str, byte_offset: usize) -> (usize, usize) {
+        let offset = previous_char_boundary(content, byte_offset.min(content.len()));
+        let line_index = self
+            .starts
+            .partition_point(|line_start| *line_start <= offset)
+            .saturating_sub(1);
+        let line_start = self.starts.get(line_index).copied().unwrap_or(0);
+        let column = content[line_start..offset].chars().count() + 1;
+
+        (line_index + 1, column)
+    }
+
+    pub fn snippet(&self, content: &str, line: usize) -> Option<String> {
+        let start = *self.starts.get(line.checked_sub(1)?)?;
+        let end = self
+            .starts
+            .get(line)
+            .copied()
+            .map(|next_start| next_start.saturating_sub(1))
+            .unwrap_or(content.len());
+
+        content
+            .get(start..end)
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| line.chars().take(240).collect())
+    }
+}
+
+fn previous_char_boundary(content: &str, mut offset: usize) -> usize {
+    offset = offset.min(content.len());
+
+    while offset > 0 && !content.is_char_boundary(offset) {
+        offset -= 1;
+    }
+
+    offset
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,5 +391,15 @@ mod tests {
 
         assert_eq!(line_col_at(content, offset), (2, 3));
         assert_eq!(line_snippet(content, 2).as_deref(), Some("second line"));
+    }
+
+    #[test]
+    fn line_index_handles_non_ascii_offsets() {
+        let content = "für\n  second line\nthird";
+        let offset = content.find("second").expect("fixture contains second");
+        let index = LineIndex::new(content);
+
+        assert_eq!(index.line_col(content, offset), (2, 3));
+        assert_eq!(index.snippet(content, 2).as_deref(), Some("second line"));
     }
 }
