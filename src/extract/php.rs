@@ -480,27 +480,72 @@ fn emit_ast_class_reference(
     true
 }
 
-#[derive(Default)]
-struct InstanceTypes {
-    properties: HashMap<String, String>,
-    variables: HashMap<String, String>,
+#[derive(Debug, Clone)]
+struct TypeInfo {
+    fqcn: String,
+    confidence: Confidence,
 }
 
-impl InstanceTypes {
-    fn is_empty(&self) -> bool {
-        self.properties.is_empty() && self.variables.is_empty()
+impl TypeInfo {
+    fn new(fqcn: String, confidence: Confidence) -> Option<Self> {
+        is_shopware_fqcn(&fqcn).then_some(Self { fqcn, confidence })
+    }
+
+    fn with_max_confidence(&self, confidence: Confidence) -> Self {
+        Self {
+            fqcn: self.fqcn.clone(),
+            confidence: self.confidence.min(confidence),
+        }
     }
 }
 
-enum InstanceReceiver {
-    Property(String),
-    Variable(String),
+#[derive(Default)]
+struct PhpSemanticIndex<'tree> {
+    properties: HashMap<String, TypeInfo>,
+    routines: HashMap<String, RoutineSummary<'tree>>,
 }
 
-struct InstanceMethodCall {
-    receiver: InstanceReceiver,
+#[derive(Clone)]
+struct RoutineSummary<'tree> {
+    parameters: Vec<String>,
+    param_types: HashMap<String, TypeInfo>,
+    return_type: Option<TypeInfo>,
+    body: Option<Node<'tree>>,
+    param_method_calls: Vec<ParamMethodCall>,
+}
+
+#[derive(Clone)]
+struct ParamMethodCall {
+    param_index: usize,
     method_name: String,
-    method_offset: usize,
+}
+
+#[derive(Default)]
+struct TypeEnv {
+    variables: HashMap<String, TypeInfo>,
+    properties: HashMap<String, TypeInfo>,
+}
+
+impl TypeEnv {
+    fn for_routine(index: &PhpSemanticIndex<'_>, routine: &RoutineSummary<'_>) -> Self {
+        Self {
+            variables: routine.param_types.clone(),
+            properties: index.properties.clone(),
+        }
+    }
+
+    fn top_level(index: &PhpSemanticIndex<'_>) -> Self {
+        Self {
+            variables: HashMap::new(),
+            properties: index.properties.clone(),
+        }
+    }
+}
+
+struct CallParts<'tree> {
+    name: String,
+    name_offset: usize,
+    arguments: Vec<Node<'tree>>,
 }
 
 fn emit_ast_instance_method_usages(
@@ -509,115 +554,698 @@ fn emit_ast_instance_method_usages(
     context: &PhpContext,
     sink: &mut FactSink<'_>,
 ) {
-    let types = collect_instance_types(content, root, context);
-    if types.is_empty() {
+    if !content.contains("->") {
         return;
     }
 
-    let mut cursor = root.walk();
-    let mut stack = vec![root];
+    let mut index = collect_php_semantic_index(content, root, context);
 
-    while let Some(node) = stack.pop() {
-        if matches!(
-            node.kind(),
-            "member_call_expression" | "nullsafe_member_call_expression"
-        ) && let Some(call) = parse_instance_method_call(content, node)
-        {
-            let fqcn = match &call.receiver {
-                InstanceReceiver::Property(property) => types.properties.get(property),
-                InstanceReceiver::Variable(variable) => types.variables.get(variable),
-            };
+    infer_assigned_property_types(content, context, &mut index);
+    infer_routine_summaries(content, context, &mut index);
+    infer_assigned_property_types(content, context, &mut index);
 
-            if let Some(fqcn) = fqcn {
-                sink.usage(
-                    format!("php:method:{fqcn}::{}", call.method_name),
-                    call.method_offset,
-                    Confidence::High,
-                    "instance-call",
-                );
-            }
-        }
-
-        for child in node.children(&mut cursor) {
-            if child.is_named() {
-                stack.push(child);
-            }
-        }
+    for routine in index.routines.values() {
+        let Some(body) = routine.body else {
+            continue;
+        };
+        let mut env = TypeEnv::for_routine(&index, routine);
+        emit_semantic_usages_in_node(content, body, &mut env, &index, context, sink);
     }
+
+    let mut env = TypeEnv::top_level(&index);
+    emit_semantic_usages_in_node(content, root, &mut env, &index, context, sink);
 }
 
-fn collect_instance_types(content: &str, root: Node<'_>, context: &PhpContext) -> InstanceTypes {
-    let mut types = InstanceTypes::default();
-    let mut cursor = root.walk();
+fn collect_php_semantic_index<'tree>(
+    content: &str,
+    root: Node<'tree>,
+    context: &PhpContext,
+) -> PhpSemanticIndex<'tree> {
+    let mut index = PhpSemanticIndex::default();
     let mut stack = vec![root];
 
     while let Some(node) = stack.pop() {
         match node.kind() {
             "property_declaration" => {
-                if let Some(fqcn) = resolved_node_type(content, node, context) {
+                if let Some(type_info) = resolved_node_type(content, node, context) {
                     for property in property_names(content, node) {
-                        types.properties.insert(property, fqcn.clone());
+                        index.properties.insert(property, type_info.clone());
                     }
                 }
             }
             "property_promotion_parameter" => {
-                if let (Some(fqcn), Some(variable)) = (
+                if let (Some(type_info), Some(parameter)) = (
                     resolved_node_type(content, node, context),
                     parameter_name(content, node),
                 ) {
-                    types.properties.insert(variable.clone(), fqcn.clone());
-                    types.variables.insert(variable, fqcn);
+                    index.properties.insert(parameter, type_info);
                 }
             }
-            "simple_parameter" | "variadic_parameter" => {
-                if let (Some(fqcn), Some(variable)) = (
-                    resolved_node_type(content, node, context),
-                    parameter_name(content, node),
-                ) {
-                    types.variables.insert(variable, fqcn);
+            "method_declaration" | "function_definition" => {
+                if let Some((name, summary)) = routine_summary(content, node, context) {
+                    for (property, type_info) in promoted_property_types(content, node, context) {
+                        index.properties.insert(property, type_info);
+                    }
+                    index.routines.insert(routine_key(&name), summary);
                 }
             }
             _ => {}
         }
 
-        for child in node.children(&mut cursor) {
-            if child.is_named() {
+        for child in named_children(node) {
+            if !matches!(node.kind(), "method_declaration" | "function_definition") {
                 stack.push(child);
             }
         }
     }
 
-    let mut cursor = root.walk();
-    let mut stack = vec![root];
-
-    while let Some(node) = stack.pop() {
-        if node.kind() == "assignment_expression" {
-            map_assigned_property_type(content, node, &mut types);
-        }
-
-        for child in node.children(&mut cursor) {
-            if child.is_named() {
-                stack.push(child);
-            }
-        }
-    }
-
-    types
+    index
 }
 
-fn resolved_node_type(content: &str, node: Node<'_>, context: &PhpContext) -> Option<String> {
-    let type_node = node.child_by_field_name("type")?;
+fn promoted_property_types(
+    content: &str,
+    node: Node<'_>,
+    context: &PhpContext,
+) -> Vec<(String, TypeInfo)> {
+    let Some(parameters_node) = node.child_by_field_name("parameters") else {
+        return Vec::new();
+    };
 
+    named_children(parameters_node)
+        .into_iter()
+        .filter(|parameter| parameter.kind() == "property_promotion_parameter")
+        .filter_map(|parameter| {
+            Some((
+                parameter_name(content, parameter)?,
+                resolved_node_type(content, parameter, context)?,
+            ))
+        })
+        .collect()
+}
+
+fn routine_summary<'tree>(
+    content: &str,
+    node: Node<'tree>,
+    context: &PhpContext,
+) -> Option<(String, RoutineSummary<'tree>)> {
+    let name_node = node.child_by_field_name("name")?;
+    let name = name_node.utf8_text(content.as_bytes()).ok()?.to_string();
+    let mut parameters = Vec::new();
+    let mut param_types = HashMap::new();
+
+    if let Some(parameters_node) = node.child_by_field_name("parameters") {
+        for parameter in named_children(parameters_node) {
+            if !matches!(
+                parameter.kind(),
+                "simple_parameter" | "property_promotion_parameter" | "variadic_parameter"
+            ) {
+                continue;
+            }
+
+            let Some(parameter_name) = parameter_name(content, parameter) else {
+                continue;
+            };
+
+            if let Some(type_info) = resolved_node_type(content, parameter, context) {
+                param_types.insert(parameter_name.clone(), type_info);
+            }
+
+            parameters.push(parameter_name);
+        }
+    }
+
+    let return_type = node
+        .child_by_field_name("return_type")
+        .and_then(|return_type| {
+            resolved_type_node(content, return_type, context, Confidence::High)
+        });
+
+    Some((
+        name,
+        RoutineSummary {
+            parameters,
+            param_types,
+            return_type,
+            body: node.child_by_field_name("body"),
+            param_method_calls: Vec::new(),
+        },
+    ))
+}
+
+fn infer_assigned_property_types(
+    content: &str,
+    context: &PhpContext,
+    index: &mut PhpSemanticIndex<'_>,
+) {
+    let mut updates = Vec::new();
+
+    for routine in index.routines.values() {
+        let Some(body) = routine.body else {
+            continue;
+        };
+        let mut env = TypeEnv::for_routine(index, routine);
+        collect_assigned_property_types(content, body, &mut env, index, context, &mut updates);
+    }
+
+    for (property, type_info) in updates {
+        index.properties.insert(property, type_info);
+    }
+}
+
+fn collect_assigned_property_types(
+    content: &str,
+    node: Node<'_>,
+    env: &mut TypeEnv,
+    index: &PhpSemanticIndex<'_>,
+    context: &PhpContext,
+    updates: &mut Vec<(String, TypeInfo)>,
+) {
+    match node.kind() {
+        "method_declaration" | "function_definition" => {}
+        "assignment_expression" => {
+            if let Some(right) = node.child_by_field_name("right") {
+                collect_assigned_property_types(content, right, env, index, context, updates);
+            }
+            apply_type_assignment(content, node, env, index, context);
+
+            if let (Some(left), Some(right)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) && let Some(property) = this_property_name(content, left)
+                && let Some(type_info) = resolve_expr_type(content, right, env, index, context)
+            {
+                updates.push((property, type_info));
+            }
+        }
+        _ => {
+            for child in named_children(node) {
+                collect_assigned_property_types(content, child, env, index, context, updates);
+            }
+        }
+    }
+}
+
+fn infer_routine_summaries(content: &str, context: &PhpContext, index: &mut PhpSemanticIndex<'_>) {
+    let keys = index.routines.keys().cloned().collect::<Vec<_>>();
+
+    for key in keys {
+        let Some(routine) = index.routines.get(&key).cloned() else {
+            continue;
+        };
+        let Some(body) = routine.body else {
+            continue;
+        };
+
+        let param_method_calls = collect_param_method_calls(content, body, &routine.parameters);
+        let inferred_return_type = routine.return_type.clone().or_else(|| {
+            let mut env = TypeEnv::for_routine(index, &routine);
+            infer_return_type(content, body, &mut env, index, context)
+        });
+
+        if let Some(routine) = index.routines.get_mut(&key) {
+            routine.param_method_calls = param_method_calls;
+            routine.return_type = inferred_return_type;
+        }
+    }
+}
+
+fn collect_param_method_calls(
+    content: &str,
+    body: Node<'_>,
+    parameters: &[String],
+) -> Vec<ParamMethodCall> {
+    let origins = parameters
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let mut env = origins;
+    let mut calls = Vec::new();
+
+    collect_param_method_calls_in_node(content, body, &mut env, &mut calls);
+    calls
+}
+
+fn collect_param_method_calls_in_node(
+    content: &str,
+    node: Node<'_>,
+    env: &mut HashMap<String, usize>,
+    calls: &mut Vec<ParamMethodCall>,
+) {
+    match node.kind() {
+        "method_declaration" | "function_definition" => {}
+        "assignment_expression" => {
+            if let Some(right) = node.child_by_field_name("right") {
+                collect_param_method_calls_in_node(content, right, env, calls);
+            }
+
+            if let Some(left) = node.child_by_field_name("left")
+                && let Some(variable) = variable_receiver_name(content, left)
+            {
+                if let Some(right) = node.child_by_field_name("right")
+                    && let Some(param_index) = resolve_param_origin(content, right, env)
+                {
+                    env.insert(variable, param_index);
+                } else {
+                    env.remove(&variable);
+                }
+            }
+        }
+        "member_call_expression" | "nullsafe_member_call_expression" => {
+            if let Some(object) = node.child_by_field_name("object") {
+                collect_param_method_calls_in_node(content, object, env, calls);
+            }
+            if let Some(arguments) = node.child_by_field_name("arguments") {
+                collect_param_method_calls_in_node(content, arguments, env, calls);
+            }
+
+            if let Some(object) = node.child_by_field_name("object")
+                && let Some(param_index) = resolve_param_origin(content, object, env)
+                && let Some((method_name, _)) = method_name_from_call(content, node)
+            {
+                calls.push(ParamMethodCall {
+                    param_index,
+                    method_name,
+                });
+            }
+        }
+        "function_call_expression" | "scoped_call_expression" => {
+            if let Some(arguments) = node.child_by_field_name("arguments") {
+                collect_param_method_calls_in_node(content, arguments, env, calls);
+            }
+        }
+        _ => {
+            for child in named_children(node) {
+                collect_param_method_calls_in_node(content, child, env, calls);
+            }
+        }
+    }
+}
+
+fn infer_return_type(
+    content: &str,
+    node: Node<'_>,
+    env: &mut TypeEnv,
+    index: &PhpSemanticIndex<'_>,
+    context: &PhpContext,
+) -> Option<TypeInfo> {
+    match node.kind() {
+        "method_declaration" | "function_definition" => None,
+        "assignment_expression" => {
+            if let Some(right) = node.child_by_field_name("right")
+                && let Some(return_type) = infer_return_type(content, right, env, index, context)
+            {
+                apply_type_assignment(content, node, env, index, context);
+                return Some(return_type);
+            }
+
+            apply_type_assignment(content, node, env, index, context);
+            None
+        }
+        "return_statement" => first_named_child(node)
+            .and_then(|expression| resolve_expr_type(content, expression, env, index, context))
+            .map(|type_info| type_info.with_max_confidence(Confidence::Medium)),
+        _ => {
+            for child in named_children(node) {
+                if let Some(return_type) = infer_return_type(content, child, env, index, context) {
+                    return Some(return_type);
+                }
+            }
+            None
+        }
+    }
+}
+
+fn emit_semantic_usages_in_node(
+    content: &str,
+    node: Node<'_>,
+    env: &mut TypeEnv,
+    index: &PhpSemanticIndex<'_>,
+    context: &PhpContext,
+    sink: &mut FactSink<'_>,
+) {
+    match node.kind() {
+        "method_declaration" | "function_definition" => {}
+        "assignment_expression" => {
+            if let Some(right) = node.child_by_field_name("right") {
+                emit_semantic_usages_in_node(content, right, env, index, context, sink);
+            }
+            apply_type_assignment(content, node, env, index, context);
+        }
+        "member_call_expression" | "nullsafe_member_call_expression" => {
+            if let Some(object) = node.child_by_field_name("object") {
+                emit_semantic_usages_in_node(content, object, env, index, context, sink);
+            }
+            if let Some(arguments) = node.child_by_field_name("arguments") {
+                emit_semantic_usages_in_node(content, arguments, env, index, context, sink);
+            }
+
+            emit_direct_member_call_usage(content, node, env, index, context, sink);
+            emit_forwarded_call_usages(content, node, env, index, context, sink);
+        }
+        "function_call_expression" | "scoped_call_expression" => {
+            if let Some(arguments) = node.child_by_field_name("arguments") {
+                emit_semantic_usages_in_node(content, arguments, env, index, context, sink);
+            }
+
+            emit_forwarded_call_usages(content, node, env, index, context, sink);
+        }
+        _ => {
+            for child in named_children(node) {
+                emit_semantic_usages_in_node(content, child, env, index, context, sink);
+            }
+        }
+    }
+}
+
+fn emit_direct_member_call_usage(
+    content: &str,
+    node: Node<'_>,
+    env: &TypeEnv,
+    index: &PhpSemanticIndex<'_>,
+    context: &PhpContext,
+    sink: &mut FactSink<'_>,
+) {
+    let Some((method_name, method_offset)) = method_name_from_call(content, node) else {
+        return;
+    };
+    let Some(object) = node.child_by_field_name("object") else {
+        return;
+    };
+    let Some(type_info) = resolve_expr_type(content, object, env, index, context) else {
+        return;
+    };
+
+    sink.usage(
+        format!("php:method:{}::{method_name}", type_info.fqcn),
+        method_offset,
+        type_info.confidence,
+        "instance-call",
+    );
+}
+
+fn emit_forwarded_call_usages(
+    content: &str,
+    node: Node<'_>,
+    env: &TypeEnv,
+    index: &PhpSemanticIndex<'_>,
+    context: &PhpContext,
+    sink: &mut FactSink<'_>,
+) {
+    let Some(call) = local_call_parts(content, node) else {
+        return;
+    };
+    let Some(summary) = index.routines.get(&routine_key(&call.name)) else {
+        return;
+    };
+
+    for param_call in &summary.param_method_calls {
+        let Some(argument) = call.arguments.get(param_call.param_index) else {
+            continue;
+        };
+        let Some(type_info) = resolve_expr_type(content, *argument, env, index, context) else {
+            continue;
+        };
+        let parameter_name = summary
+            .parameters
+            .get(param_call.param_index)
+            .map(String::as_str);
+
+        if let Some(parameter_type) = parameter_name.and_then(|name| summary.param_types.get(name))
+            && parameter_type.fqcn == type_info.fqcn
+        {
+            continue;
+        }
+
+        let type_info = type_info.with_max_confidence(Confidence::Medium);
+        sink.usage(
+            format!("php:method:{}::{}", type_info.fqcn, param_call.method_name),
+            call.name_offset,
+            type_info.confidence,
+            "forwarded-call",
+        );
+    }
+}
+
+fn apply_type_assignment(
+    content: &str,
+    node: Node<'_>,
+    env: &mut TypeEnv,
+    index: &PhpSemanticIndex<'_>,
+    context: &PhpContext,
+) {
+    let Some(left) = node.child_by_field_name("left") else {
+        return;
+    };
+    let Some(right) = node.child_by_field_name("right") else {
+        return;
+    };
+    let right_type = resolve_expr_type(content, right, env, index, context);
+
+    if let Some(variable) = variable_receiver_name(content, left) {
+        if let Some(type_info) = right_type {
+            env.variables.insert(variable, type_info);
+        } else {
+            env.variables.remove(&variable);
+        }
+    } else if let Some(property) = this_property_name(content, left) {
+        if let Some(type_info) = right_type {
+            env.properties.insert(property, type_info);
+        } else {
+            env.properties.remove(&property);
+        }
+    }
+}
+
+fn resolve_expr_type(
+    content: &str,
+    node: Node<'_>,
+    env: &TypeEnv,
+    index: &PhpSemanticIndex<'_>,
+    context: &PhpContext,
+) -> Option<TypeInfo> {
+    match node.kind() {
+        "variable_name" => variable_receiver_name(content, node)
+            .and_then(|variable| env.variables.get(&variable).cloned()),
+        "member_access_expression" | "nullsafe_member_access_expression" => {
+            this_property_name(content, node)
+                .and_then(|property| env.properties.get(&property).cloned())
+        }
+        "object_creation_expression" => object_creation_type(content, node, context),
+        "member_call_expression" | "nullsafe_member_call_expression" => {
+            container_get_type(content, node, context)
+                .or_else(|| local_call_return_type(content, node, index))
+        }
+        "function_call_expression" | "scoped_call_expression" => {
+            local_call_return_type(content, node, index)
+        }
+        "parenthesized_expression" => first_named_child(node)
+            .and_then(|child| resolve_expr_type(content, child, env, index, context)),
+        "assignment_expression" => node
+            .child_by_field_name("right")
+            .and_then(|right| resolve_expr_type(content, right, env, index, context)),
+        _ => None,
+    }
+}
+
+fn resolved_node_type(content: &str, node: Node<'_>, context: &PhpContext) -> Option<TypeInfo> {
+    let type_node = node.child_by_field_name("type")?;
+    resolved_type_node(content, type_node, context, Confidence::High)
+}
+
+fn resolved_type_node(
+    content: &str,
+    type_node: Node<'_>,
+    context: &PhpContext,
+    confidence: Confidence,
+) -> Option<TypeInfo> {
     for named_type in descendant_kinds(type_node, "named_type") {
         if let Ok(raw_type) = named_type.utf8_text(content.as_bytes())
             && let Some(fqcn) = context.resolve_class_name(raw_type, named_type.start_byte())
-            && is_shopware_fqcn(&fqcn)
+            && let Some(type_info) = TypeInfo::new(fqcn, confidence)
         {
-            return Some(fqcn);
+            return Some(type_info);
         }
     }
 
     None
+}
+
+fn object_creation_type(content: &str, node: Node<'_>, context: &PhpContext) -> Option<TypeInfo> {
+    for child in named_children(node) {
+        if !matches!(child.kind(), "name" | "qualified_name" | "relative_name") {
+            continue;
+        }
+        let raw_name = child.utf8_text(content.as_bytes()).ok()?;
+        let fqcn = context.resolve_class_name(raw_name, child.start_byte())?;
+        return TypeInfo::new(fqcn, Confidence::High);
+    }
+
+    None
+}
+
+fn container_get_type(content: &str, node: Node<'_>, context: &PhpContext) -> Option<TypeInfo> {
+    let (method_name, _) = method_name_from_call(content, node)?;
+    if method_name != "get" {
+        return None;
+    }
+
+    call_arguments(node)
+        .first()
+        .and_then(|argument| service_lookup_arg_type(content, *argument, context))
+}
+
+fn service_lookup_arg_type(
+    content: &str,
+    node: Node<'_>,
+    context: &PhpContext,
+) -> Option<TypeInfo> {
+    match node.kind() {
+        "class_constant_access_expression" => {
+            let raw = node.utf8_text(content.as_bytes()).ok()?;
+            let (class_name, constant) = raw.rsplit_once("::")?;
+            if constant.trim() != "class" {
+                return None;
+            }
+            let fqcn = context.resolve_class_name(class_name.trim(), node.start_byte())?;
+            TypeInfo::new(fqcn, Confidence::Medium)
+        }
+        "string" => {
+            let value = php_string_value(node.utf8_text(content.as_bytes()).ok()?)?;
+            let fqcn = context.resolve_class_name(&value, node.start_byte())?;
+            TypeInfo::new(fqcn, Confidence::Medium)
+        }
+        _ => None,
+    }
+}
+
+fn local_call_return_type(
+    content: &str,
+    node: Node<'_>,
+    index: &PhpSemanticIndex<'_>,
+) -> Option<TypeInfo> {
+    let call = local_call_parts(content, node)?;
+    index
+        .routines
+        .get(&routine_key(&call.name))
+        .and_then(|summary| summary.return_type.clone())
+}
+
+fn local_call_parts<'tree>(content: &str, node: Node<'tree>) -> Option<CallParts<'tree>> {
+    match node.kind() {
+        "member_call_expression" | "nullsafe_member_call_expression" => {
+            let object = node.child_by_field_name("object")?;
+            if !is_this_expr(content, object) {
+                return None;
+            }
+            let (name, name_offset) = method_name_from_call(content, node)?;
+            Some(CallParts {
+                name,
+                name_offset,
+                arguments: call_arguments(node),
+            })
+        }
+        "function_call_expression" => {
+            let function = node.child_by_field_name("function")?;
+            if function.kind() != "name" {
+                return None;
+            }
+            let name = function.utf8_text(content.as_bytes()).ok()?.to_string();
+            Some(CallParts {
+                name,
+                name_offset: function.start_byte(),
+                arguments: call_arguments(node),
+            })
+        }
+        "scoped_call_expression" => {
+            let scope = node.child_by_field_name("scope")?;
+            let scope_text = scope.utf8_text(content.as_bytes()).ok()?;
+            if !matches!(scope_text, "self" | "static" | "parent") {
+                return None;
+            }
+            let (name, name_offset) = method_name_from_call(content, node)?;
+            Some(CallParts {
+                name,
+                name_offset,
+                arguments: call_arguments(node),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn method_name_from_call(content: &str, node: Node<'_>) -> Option<(String, usize)> {
+    let name_node = node.child_by_field_name("name")?;
+    if name_node.kind() != "name" {
+        return None;
+    }
+
+    Some((
+        name_node.utf8_text(content.as_bytes()).ok()?.to_string(),
+        name_node.start_byte(),
+    ))
+}
+
+fn call_arguments<'tree>(node: Node<'tree>) -> Vec<Node<'tree>> {
+    let Some(arguments) = node.child_by_field_name("arguments") else {
+        return Vec::new();
+    };
+
+    named_children(arguments)
+        .into_iter()
+        .filter_map(argument_value_node)
+        .collect()
+}
+
+fn argument_value_node(node: Node<'_>) -> Option<Node<'_>> {
+    if node.kind() != "argument" {
+        return Some(node);
+    }
+
+    let name_field = node.child_by_field_name("name");
+
+    named_children(node).into_iter().find(|child| {
+        if child.kind() == "variadic_unpacking" {
+            return false;
+        }
+        if let Some(name_field) = name_field
+            && child.kind() == name_field.kind()
+            && child.start_byte() == name_field.start_byte()
+            && child.end_byte() == name_field.end_byte()
+        {
+            return false;
+        }
+
+        true
+    })
+}
+
+fn resolve_param_origin(
+    content: &str,
+    node: Node<'_>,
+    env: &HashMap<String, usize>,
+) -> Option<usize> {
+    match node.kind() {
+        "variable_name" => {
+            variable_receiver_name(content, node).and_then(|variable| env.get(&variable).copied())
+        }
+        "parenthesized_expression" => {
+            first_named_child(node).and_then(|child| resolve_param_origin(content, child, env))
+        }
+        "assignment_expression" => node
+            .child_by_field_name("right")
+            .and_then(|right| resolve_param_origin(content, right, env)),
+        _ => None,
+    }
+}
+
+fn first_named_child(node: Node<'_>) -> Option<Node<'_>> {
+    named_children(node).into_iter().next()
+}
+
+fn named_children(node: Node<'_>) -> Vec<Node<'_>> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor).collect()
 }
 
 fn first_descendant_kind<'tree>(root: Node<'tree>, kind: &str) -> Option<Node<'tree>> {
@@ -634,8 +1262,7 @@ fn descendant_kinds<'tree>(root: Node<'tree>, kind: &str) -> Vec<Node<'tree>> {
             continue;
         }
 
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
+        for child in named_children(node) {
             stack.push(child);
         }
     }
@@ -645,9 +1272,8 @@ fn descendant_kinds<'tree>(root: Node<'tree>, kind: &str) -> Vec<Node<'tree>> {
 
 fn property_names(content: &str, root: Node<'_>) -> Vec<String> {
     let mut names = Vec::new();
-    let mut cursor = root.walk();
 
-    for child in root.named_children(&mut cursor) {
+    for child in named_children(root) {
         if child.kind() == "property_element"
             && let Some(name_node) = child.child_by_field_name("name")
             && let Ok(raw_name) = name_node.utf8_text(content.as_bytes())
@@ -672,51 +1298,6 @@ fn parameter_name(content: &str, node: Node<'_>) -> Option<String> {
     raw_name.strip_prefix('$').map(str::to_string)
 }
 
-fn map_assigned_property_type(content: &str, node: Node<'_>, types: &mut InstanceTypes) {
-    let Some(left) = node.child_by_field_name("left") else {
-        return;
-    };
-    let Some(right) = node.child_by_field_name("right") else {
-        return;
-    };
-    let Some(property) = this_property_name(content, left) else {
-        return;
-    };
-    let Some(variable) = variable_receiver_name(content, right) else {
-        return;
-    };
-    let Some(fqcn) = types.variables.get(&variable).cloned() else {
-        return;
-    };
-
-    types.properties.insert(property, fqcn);
-}
-
-fn parse_instance_method_call(content: &str, node: Node<'_>) -> Option<InstanceMethodCall> {
-    let name_node = node.child_by_field_name("name")?;
-    if name_node.kind() != "name" {
-        return None;
-    }
-
-    let method_name = name_node.utf8_text(content.as_bytes()).ok()?.to_string();
-    let object_node = node.child_by_field_name("object")?;
-    let receiver = match object_node.kind() {
-        "member_access_expression" | "nullsafe_member_access_expression" => {
-            InstanceReceiver::Property(this_property_name(content, object_node)?)
-        }
-        "variable_name" => {
-            InstanceReceiver::Variable(variable_receiver_name(content, object_node)?)
-        }
-        _ => return None,
-    };
-
-    Some(InstanceMethodCall {
-        receiver,
-        method_name,
-        method_offset: name_node.start_byte(),
-    })
-}
-
 fn this_property_name(content: &str, node: Node<'_>) -> Option<String> {
     let name_node = node.child_by_field_name("name")?;
     if name_node.kind() != "name" {
@@ -724,8 +1305,7 @@ fn this_property_name(content: &str, node: Node<'_>) -> Option<String> {
     }
 
     let object_node = node.child_by_field_name("object")?;
-    let object_name = object_node.utf8_text(content.as_bytes()).ok()?;
-    if object_name != "$this" {
+    if !is_this_expr(content, object_node) {
         return None;
     }
 
@@ -741,6 +1321,30 @@ fn variable_receiver_name(content: &str, node: Node<'_>) -> Option<String> {
         .ok()?
         .strip_prefix('$')
         .map(str::to_string)
+}
+
+fn is_this_expr(content: &str, node: Node<'_>) -> bool {
+    if node.kind() == "parenthesized_expression" {
+        return first_named_child(node).is_some_and(|child| is_this_expr(content, child));
+    }
+
+    node.kind() == "variable_name"
+        && node
+            .utf8_text(content.as_bytes())
+            .is_ok_and(|text| text == "$this")
+}
+
+fn php_string_value(raw: &str) -> Option<String> {
+    let quote = raw.as_bytes().first().copied()?;
+    if !matches!(quote, b'\'' | b'"') || raw.as_bytes().last().copied() != Some(quote) {
+        return None;
+    }
+
+    Some(raw[1..raw.len().saturating_sub(1)].replace("\\\\", "\\"))
+}
+
+fn routine_key(name: &str) -> String {
+    name.to_ascii_lowercase()
 }
 
 fn emit_static_access_usages(content: &str, context: &PhpContext, sink: &mut FactSink<'_>) {
@@ -1963,6 +2567,128 @@ final class Demo
             .count();
 
         assert_eq!(matches, 3);
+    }
+
+    #[test]
+    fn extracts_instance_method_calls_from_aliases_factories_and_new_objects() {
+        let facts = usage_facts(
+            r#"<?php
+namespace Swag\Demo;
+
+use Shopware\Core\Checkout\Document\Service\DocumentGenerator;
+
+final class Demo
+{
+    public function __construct(private readonly DocumentGenerator $documentGenerator)
+    {
+    }
+
+    private function declaredGenerator(): DocumentGenerator
+    {
+        return $this->documentGenerator;
+    }
+
+    private function inferredGenerator()
+    {
+        return $this->documentGenerator;
+    }
+
+    public function test(): void
+    {
+        $alias = $this->documentGenerator;
+        $declared = $this->declaredGenerator();
+        $inferred = $this->inferredGenerator();
+        $created = new DocumentGenerator();
+
+        $alias->generate([], []);
+        $declared->generate([], []);
+        $inferred->generate([], []);
+        $created->generate([], []);
+        (new DocumentGenerator())->generate([], []);
+        $this->declaredGenerator()->generate([], []);
+    }
+}
+"#,
+        );
+
+        let matches = facts
+            .iter()
+            .filter(|fact| {
+                fact.surface.as_str()
+                    == "php:method:Shopware\\Core\\Checkout\\Document\\Service\\DocumentGenerator::generate"
+                    && fact.usage_kind == "instance-call"
+            })
+            .count();
+
+        assert_eq!(matches, 6);
+    }
+
+    #[test]
+    fn extracts_forwarded_instance_method_calls_from_same_file_wrappers() {
+        let facts = usage_facts(
+            r#"<?php
+namespace Swag\Demo;
+
+use Shopware\Core\Checkout\Document\Service\DocumentGenerator;
+
+final class Demo
+{
+    public function __construct(private readonly DocumentGenerator $documentGenerator)
+    {
+    }
+
+    private function invokeGenerator($generator): void
+    {
+        $alias = $generator;
+        $alias->generate([], []);
+    }
+
+    public function test(): void
+    {
+        $this->invokeGenerator($this->documentGenerator);
+    }
+}
+"#,
+        );
+
+        assert!(facts.iter().any(|fact| {
+            fact.surface.as_str()
+                == "php:method:Shopware\\Core\\Checkout\\Document\\Service\\DocumentGenerator::generate"
+                && fact.usage_kind == "forwarded-call"
+                && fact.confidence == Confidence::Medium
+        }));
+    }
+
+    #[test]
+    fn extracts_instance_method_calls_from_class_service_lookups() {
+        let facts = usage_facts(
+            r#"<?php
+namespace Swag\Demo;
+
+use Shopware\Core\Checkout\Document\Service\DocumentGenerator;
+
+final class Demo
+{
+    public function test(): void
+    {
+        $this->container->get(DocumentGenerator::class)->generate([], []);
+        $this->container->get('Shopware\\Core\\Checkout\\Document\\Service\\DocumentGenerator')->generate([], []);
+    }
+}
+"#,
+        );
+
+        let matches = facts
+            .iter()
+            .filter(|fact| {
+                fact.surface.as_str()
+                    == "php:method:Shopware\\Core\\Checkout\\Document\\Service\\DocumentGenerator::generate"
+                    && fact.usage_kind == "instance-call"
+                    && fact.confidence == Confidence::Medium
+            })
+            .count();
+
+        assert_eq!(matches, 2);
     }
 
     #[test]
