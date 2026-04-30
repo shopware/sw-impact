@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::model::{Confidence, Evidence, Fact, FactRole, line_col_at, line_snippet};
+use crate::model::{Confidence, Evidence, Fact, FactRole, LineIndex};
 
 pub fn extract(
     content: &str,
@@ -11,7 +11,7 @@ pub fn extract(
     role: FactRole,
     include_snippets: bool,
 ) -> Vec<Fact> {
-    let mut facts = FactCollector::new();
+    let mut facts = FactCollector::new(content, relative_path, include_snippets);
 
     extract_component_calls(content, relative_path, role, include_snippets, &mut facts);
     extract_module_registers(content, relative_path, role, include_snippets, &mut facts);
@@ -27,9 +27,9 @@ pub fn extract(
 
 fn extract_component_calls(
     content: &str,
-    relative_path: &Path,
+    _relative_path: &Path,
     role: FactRole,
-    include_snippets: bool,
+    _include_snippets: bool,
     facts: &mut FactCollector,
 ) {
     for captures in component_call_re().captures_iter(content) {
@@ -48,7 +48,7 @@ fn extract_component_calls(
         facts.push(
             role,
             format!("admin:component:{}", component.value),
-            evidence(content, relative_path, component.start, include_snippets),
+            facts.evidence(component.start),
             Confidence::High,
             format!("shopware.component.{}", method_match.as_str()),
         );
@@ -59,7 +59,7 @@ fn extract_component_calls(
             facts.push(
                 role,
                 format!("admin:component:{}", parent.value),
-                evidence(content, relative_path, parent.start, include_snippets),
+                facts.evidence(parent.start),
                 Confidence::High,
                 "shopware.component.extend.parent",
             );
@@ -69,9 +69,9 @@ fn extract_component_calls(
 
 fn extract_module_registers(
     content: &str,
-    relative_path: &Path,
+    _relative_path: &Path,
     role: FactRole,
-    include_snippets: bool,
+    _include_snippets: bool,
     facts: &mut FactCollector,
 ) {
     for call_match in module_register_re().find_iter(content) {
@@ -88,7 +88,7 @@ fn extract_module_registers(
         facts.push(
             role,
             format!("admin:route:{route_prefix}"),
-            evidence(content, relative_path, module.start, include_snippets),
+            facts.evidence(module.start),
             Confidence::High,
             "shopware.module.register",
         );
@@ -100,7 +100,7 @@ fn extract_module_registers(
                 facts.push(
                     role,
                     format!("admin:route:{route_prefix}.{}", route_key.value),
-                    evidence(content, relative_path, route_key.start, include_snippets),
+                    facts.evidence(route_key.start),
                     Confidence::High,
                     "shopware.module.route",
                 );
@@ -111,9 +111,9 @@ fn extract_module_registers(
 
 fn extract_repository_factory(
     content: &str,
-    relative_path: &Path,
+    _relative_path: &Path,
     role: FactRole,
-    include_snippets: bool,
+    _include_snippets: bool,
     facts: &mut FactCollector,
 ) {
     for call_match in repository_factory_re().find_iter(content) {
@@ -126,7 +126,7 @@ fn extract_repository_factory(
             facts.push(
                 role,
                 format!("dal:entity:{}", entity.value),
-                evidence(content, relative_path, entity.start, include_snippets),
+                facts.evidence(entity.start),
                 Confidence::High,
                 "repositoryFactory.create",
             );
@@ -136,9 +136,9 @@ fn extract_repository_factory(
 
 fn extract_shopware_services(
     content: &str,
-    relative_path: &Path,
+    _relative_path: &Path,
     role: FactRole,
-    include_snippets: bool,
+    _include_snippets: bool,
     facts: &mut FactCollector,
 ) {
     for call_match in service_call_re().find_iter(content) {
@@ -150,7 +150,7 @@ fn extract_shopware_services(
         facts.push(
             role,
             format!("service:id:{}", service.value),
-            evidence(content, relative_path, service.start, include_snippets),
+            facts.evidence(service.start),
             Confidence::High,
             "shopware.service",
         );
@@ -188,17 +188,17 @@ fn extract_shopware_state(
 }
 
 fn emit_state_store(
-    content: &str,
-    relative_path: &Path,
+    _content: &str,
+    _relative_path: &Path,
     role: FactRole,
-    include_snippets: bool,
+    _include_snippets: bool,
     facts: &mut FactCollector,
     store: &Literal,
 ) {
     facts.push(
         role,
         format!("admin:state-store:{}", store.value),
-        evidence(content, relative_path, store.start, include_snippets),
+        facts.evidence(store.start),
         Confidence::High,
         "shopware.state",
     );
@@ -206,9 +206,9 @@ fn emit_state_store(
 
 fn extract_route_literals(
     content: &str,
-    relative_path: &Path,
+    _relative_path: &Path,
     role: FactRole,
-    include_snippets: bool,
+    _include_snippets: bool,
     facts: &mut FactCollector,
 ) {
     extract_property_literals(content, route_property_re(), |literal, property| {
@@ -216,7 +216,7 @@ fn extract_route_literals(
             facts.push(
                 role,
                 format!("admin:route:{}", literal.value),
-                evidence(content, relative_path, literal.start, include_snippets),
+                facts.evidence(literal.start),
                 Confidence::High,
                 format!("admin.route.{property}"),
             );
@@ -228,7 +228,7 @@ fn extract_route_literals(
             facts.push(
                 role,
                 format!("admin:route:{}", literal.value),
-                evidence(content, relative_path, literal.start, include_snippets),
+                facts.evidence(literal.start),
                 Confidence::Medium,
                 format!("admin.route.attribute.{attribute}"),
             );
@@ -238,9 +238,9 @@ fn extract_route_literals(
 
 fn extract_entity_literals(
     content: &str,
-    relative_path: &Path,
+    _relative_path: &Path,
     role: FactRole,
-    include_snippets: bool,
+    _include_snippets: bool,
     facts: &mut FactCollector,
 ) {
     extract_property_literals(content, entity_property_re(), |literal, property| {
@@ -248,7 +248,7 @@ fn extract_entity_literals(
             facts.push(
                 role,
                 format!("dal:entity:{}", literal.value),
-                evidence(content, relative_path, literal.start, include_snippets),
+                facts.evidence(literal.start),
                 Confidence::High,
                 format!("admin.entity.{property}"),
             );
@@ -260,7 +260,7 @@ fn extract_entity_literals(
             facts.push(
                 role,
                 format!("dal:entity:{}", literal.value),
-                evidence(content, relative_path, literal.start, include_snippets),
+                facts.evidence(literal.start),
                 Confidence::High,
                 format!("admin.entity.attribute.{attribute}"),
             );
@@ -270,9 +270,9 @@ fn extract_entity_literals(
 
 fn extract_component_literals(
     content: &str,
-    relative_path: &Path,
+    _relative_path: &Path,
     role: FactRole,
-    include_snippets: bool,
+    _include_snippets: bool,
     facts: &mut FactCollector,
 ) {
     extract_property_literals(content, component_property_re(), |literal, property| {
@@ -280,7 +280,7 @@ fn extract_component_literals(
             facts.push(
                 role,
                 format!("admin:component:{}", literal.value),
-                evidence(content, relative_path, literal.start, include_snippets),
+                facts.evidence(literal.start),
                 Confidence::Medium,
                 format!("admin.component.{property}"),
             );
@@ -292,7 +292,7 @@ fn extract_component_literals(
             facts.push(
                 role,
                 format!("admin:component:{}", literal.value),
-                evidence(content, relative_path, literal.start, include_snippets),
+                facts.evidence(literal.start),
                 Confidence::Medium,
                 format!("admin.component.attribute.{attribute}"),
             );
@@ -307,7 +307,7 @@ fn extract_component_literals(
         facts.push(
             role,
             format!("admin:component:{}", component.as_str()),
-            evidence(content, relative_path, component.start(), include_snippets),
+            facts.evidence(component.start()),
             Confidence::Medium,
             "vue.template.component",
         );
@@ -798,31 +798,39 @@ fn looks_like_entity_name(value: &str) -> bool {
         && value.chars().any(|ch| ch.is_ascii_lowercase())
 }
 
-fn evidence(
-    content: &str,
-    relative_path: &Path,
-    byte_offset: usize,
+struct FactCollector<'a> {
+    content: &'a str,
+    relative_path: &'a Path,
     include_snippets: bool,
-) -> Evidence {
-    let (line, column) = line_col_at(content, byte_offset.min(content.len()));
-
-    Evidence {
-        path: relative_path.to_path_buf(),
-        line,
-        column: Some(column),
-        snippet: include_snippets
-            .then(|| line_snippet(content, line))
-            .flatten(),
-    }
-}
-
-struct FactCollector {
+    line_index: LineIndex,
     facts: Vec<Fact>,
 }
 
-impl FactCollector {
-    fn new() -> Self {
-        Self { facts: Vec::new() }
+impl<'a> FactCollector<'a> {
+    fn new(content: &'a str, relative_path: &'a Path, include_snippets: bool) -> Self {
+        Self {
+            content,
+            relative_path,
+            include_snippets,
+            line_index: LineIndex::new(content),
+            facts: Vec::new(),
+        }
+    }
+
+    fn evidence(&self, byte_offset: usize) -> Evidence {
+        let (line, column) = self
+            .line_index
+            .line_col(self.content, byte_offset.min(self.content.len()));
+
+        Evidence {
+            path: self.relative_path.to_path_buf(),
+            line,
+            column: Some(column),
+            snippet: self
+                .include_snippets
+                .then(|| self.line_index.snippet(self.content, line))
+                .flatten(),
+        }
     }
 
     fn push(

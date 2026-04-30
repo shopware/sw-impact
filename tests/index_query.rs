@@ -93,4 +93,36 @@ final class CartSubscriber
         .stdout(predicate::str::contains(
             "https://github.com/shopware/store-plugin-mirror/blob/main/plugins/shopware6/plugin/SwagCart/src/CartSubscriber.php#L",
         ));
+
+    Command::cargo_bin("sw-impact")
+        .expect("binary exists")
+        .args([
+            "query",
+            "--index",
+            index.to_str().expect("utf-8 index path"),
+            "Cart",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Query: Cart"))
+        .stdout(predicate::str::contains("Matching surfaces:"))
+        .stdout(predicate::str::contains(
+            "php:class:Shopware\\Core\\Checkout\\Cart\\CartService",
+        ))
+        .stdout(predicate::str::contains("src/CartSubscriber.php"));
+
+    Command::cargo_bin("sw-impact")
+        .expect("binary exists")
+        .args([
+            "query",
+            "--index",
+            index.to_str().expect("utf-8 index path"),
+            "php:class:*CartService",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Query: php:class:*CartService"))
+        .stdout(predicate::str::contains(
+            "php:class:Shopware\\Core\\Checkout\\Cart\\CartService",
+        ));
 }

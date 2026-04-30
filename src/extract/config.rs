@@ -762,10 +762,10 @@ fn handle_config_string(
         .last()
         .map(|part| normalize_key(part))
         .unwrap_or_default();
-    let offset = find_value_offset(content, value).unwrap_or(0);
-    let event_end = offset.saturating_add(value.len());
+    let mut value_range = None;
 
     if is_theme_file(relative_path) && key == "name" {
+        let (offset, event_end) = config_value_range(content, value, &mut value_range);
         emit_value(
             format!("theme:name:{value}"),
             "theme.metadata.name",
@@ -782,6 +782,7 @@ fn handle_config_string(
     }
 
     if is_app_file(relative_path) && key == "name" {
+        let (offset, event_end) = config_value_range(content, value, &mut value_range);
         emit_value(
             format!("app:name:{value}"),
             "app.metadata.name",
@@ -800,6 +801,7 @@ fn handle_config_string(
     if looks_like_twig_template(value)
         || (path.iter().any(|part| normalize_key(part) == "views") && value.starts_with('@'))
     {
+        let (offset, event_end) = config_value_range(content, value, &mut value_range);
         emit_value(
             format!("twig:template:{value}"),
             "theme.view",
@@ -818,6 +820,7 @@ fn handle_config_string(
     if (is_route_context(&key, path) || looks_like_route_name(value))
         && looks_like_route_name(value)
     {
+        let (offset, event_end) = config_value_range(content, value, &mut value_range);
         emit_value(
             format!("route:name:{value}"),
             "config.route.string",
@@ -834,6 +837,7 @@ fn handle_config_string(
     }
 
     if looks_like_api_path(value) {
+        let (offset, event_end) = config_value_range(content, value, &mut value_range);
         emit_value(
             format!("api:{value}"),
             "config.api-path",
@@ -850,6 +854,7 @@ fn handle_config_string(
     }
 
     if is_service_context(&key, path) && looks_like_service_id(value) {
+        let (offset, event_end) = config_value_range(content, value, &mut value_range);
         emit_value(
             format!("service:id:{value}"),
             "config.service.string",
@@ -866,6 +871,7 @@ fn handle_config_string(
     }
 
     if key == "name" && path.iter().any(|part| normalize_key(part) == "tags") {
+        let (offset, event_end) = config_value_range(content, value, &mut value_range);
         emit_value(
             format!("service:id:{value}"),
             "config.service.tag",
@@ -882,6 +888,7 @@ fn handle_config_string(
     }
 
     if is_event_context(&key, path) {
+        let (offset, event_end) = config_value_range(content, value, &mut value_range);
         for event_name in split_config_values(value) {
             emit_event_value(
                 event_name,
@@ -898,6 +905,7 @@ fn handle_config_string(
     }
 
     if is_entity_context(&key, path) && looks_like_entity_name(value) {
+        let (offset, event_end) = config_value_range(content, value, &mut value_range);
         emit_value(
             format!("dal:entity:{value}"),
             "config.entity",
@@ -912,6 +920,17 @@ fn handle_config_string(
             facts,
         );
     }
+}
+
+fn config_value_range(
+    content: &str,
+    value: &str,
+    value_range: &mut Option<(usize, usize)>,
+) -> (usize, usize) {
+    *value_range.get_or_insert_with(|| {
+        let offset = find_value_offset(content, value).unwrap_or(0);
+        (offset, offset.saturating_add(value.len()))
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

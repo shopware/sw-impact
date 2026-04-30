@@ -19,7 +19,7 @@ pub enum Commands {
     Index(IndexArgs),
     /// Check a local Shopware worktree against an index.
     Check(CheckArgs),
-    /// Query one exact surface key.
+    /// Query surface keys or wildcard patterns.
     Query(QueryArgs),
 }
 
@@ -92,5 +92,5 @@ pub struct QueryArgs {
     #[arg(long, default_value_t = 50)]
     pub max_evidence: usize,
 
-    pub surface: String,
+    pub pattern: String,
 }

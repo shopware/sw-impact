@@ -39,7 +39,7 @@ const PREFILTER_ANCHORS: &[&str] = &[
     "PluginManager",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Language {
     Php,
     Twig,
@@ -85,8 +85,7 @@ pub fn discover_candidates(args: &IndexArgs) -> Result<(Vec<CandidateFile>, Walk
         .with_context(|| format!("plugins path does not exist: {}", args.plugins.display()))?;
     let excludes = excluded_components(&args.exclude);
     let max_file_size = parse_max_file_size(&args.max_file_size)?;
-    let prefilter =
-        AhoCorasick::new(PREFILTER_ANCHORS).context("failed to build corpus prefilter")?;
+    let prefilter = build_prefilter()?;
 
     let plugin_roots = discover_plugin_roots(&plugins_root, &excludes)?;
     let plugins = plugin_roots
@@ -376,6 +375,10 @@ fn is_known_manifest(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| KNOWN_MANIFESTS.contains(&name))
+}
+
+fn build_prefilter() -> Result<AhoCorasick> {
+    AhoCorasick::new(PREFILTER_ANCHORS).context("failed to build corpus prefilter")
 }
 
 fn matches_prefilter(path: &Path, relative_path: &Path, prefilter: &AhoCorasick) -> Result<bool> {

@@ -11,7 +11,7 @@ use crate::cli::{IndexArgs, QueryArgs};
 use crate::extract::extract_facts;
 use crate::model::{Confidence, Fact, FactRole};
 use crate::source_link::store_plugin_mirror_url;
-use crate::walker::{CandidateFile, PluginInfo, WalkStats, discover_candidates};
+use crate::walker::{CandidateFile, Language, PluginInfo, WalkStats, discover_candidates};
 
 const SCHEMA_VERSION: i64 = 1;
 
@@ -19,11 +19,18 @@ pub fn build_index(args: IndexArgs, verbose: bool) -> Result<()> {
     let started_at = Instant::now();
     prepare_output_location(&args.out, args.force)?;
 
+    let discover_started_at = Instant::now();
     let (candidates, walk_stats) =
         discover_candidates(&args).context("discover plugin candidate files")?;
+    let discover_elapsed = discover_started_at.elapsed();
 
     let include_snippets = !args.no_snippets;
+    let extract_started_at = Instant::now();
     let extracted_candidates = extract_candidates(candidates, include_snippets, &args.threads)?;
+    let extract_elapsed = extract_started_at.elapsed();
+    let extraction_timings = ExtractionTimings::from_candidates(&extracted_candidates);
+
+    let sqlite_started_at = Instant::now();
     let mut connection = open_fresh_database(&args.out, args.force)?;
     configure_bulk_write_database(&connection).context("configure SQLite bulk write settings")?;
     connection
@@ -53,9 +60,16 @@ pub fn build_index(args: IndexArgs, verbose: bool) -> Result<()> {
             .context("commit SQLite index transaction")?;
         summary
     };
+    let sqlite_elapsed = sqlite_started_at.elapsed();
 
     if verbose {
         print_index_summary(&args.out, &summary);
+        print_index_timings(
+            discover_elapsed,
+            extract_elapsed,
+            sqlite_elapsed,
+            &extraction_timings,
+        );
     }
 
     print_index_duration(&args.out, &summary, started_at.elapsed());
@@ -69,12 +83,12 @@ pub fn query_index(args: QueryArgs) -> Result<()> {
 
     let result = query_surface(
         &connection,
-        &args.surface,
+        &args.pattern,
         args.include_low_confidence,
         args.only_high_confidence,
         args.max_evidence,
     )
-    .with_context(|| format!("query surface {}", args.surface))?;
+    .with_context(|| format!("query surface pattern {}", args.pattern))?;
 
     print_query_result(&result);
     Ok(())
@@ -105,12 +119,16 @@ struct ImpactAggregate {
 struct ExtractedCandidate {
     plugin: PluginInfo,
     relative_path: PathBuf,
+    language: Language,
+    read_duration: Duration,
+    extract_duration: Duration,
     facts: Vec<Fact>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 struct QueryResult {
-    surface: String,
+    query: SurfaceQuery,
+    matched_surfaces: usize,
     affected_plugins: usize,
     total_usages: usize,
     evidence: Vec<QueryEvidence>,
@@ -118,6 +136,7 @@ struct QueryResult {
 
 #[derive(Debug, PartialEq, Eq)]
 struct QueryEvidence {
+    surface: String,
     plugin_name: String,
     plugin_folder: String,
     file_path: String,
@@ -126,6 +145,41 @@ struct QueryEvidence {
     usage_kind: String,
     snippet: Option<String>,
     confidence: Confidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SurfaceQuery {
+    Exact(String),
+    Pattern { input: String, like_pattern: String },
+}
+
+#[derive(Debug, Default)]
+struct ExtractionTimings {
+    languages: HashMap<Language, LanguageExtractionTiming>,
+}
+
+#[derive(Debug, Default)]
+struct LanguageExtractionTiming {
+    files: usize,
+    facts: usize,
+    read_duration: Duration,
+    extract_duration: Duration,
+}
+
+impl ExtractionTimings {
+    fn from_candidates(candidates: &[ExtractedCandidate]) -> Self {
+        let mut timings = ExtractionTimings::default();
+
+        for candidate in candidates {
+            let timing = timings.languages.entry(candidate.language).or_default();
+            timing.files += 1;
+            timing.facts += candidate.facts.len();
+            timing.read_duration += candidate.read_duration;
+            timing.extract_duration += candidate.extract_duration;
+        }
+
+        timings
+    }
 }
 
 fn prepare_output_location(out: &Path, force: bool) -> Result<()> {
@@ -284,7 +338,11 @@ fn extract_candidate(
     candidate: CandidateFile,
     include_snippets: bool,
 ) -> Result<ExtractedCandidate> {
+    let read_started_at = Instant::now();
     let content = read_candidate_content(&candidate.absolute_path)?;
+    let read_duration = read_started_at.elapsed();
+
+    let extract_started_at = Instant::now();
     let facts = extract_facts(
         candidate.language,
         &content,
@@ -298,10 +356,14 @@ fn extract_candidate(
             path_display(&candidate.absolute_path)
         )
     })?;
+    let extract_duration = extract_started_at.elapsed();
 
     Ok(ExtractedCandidate {
         plugin: candidate.plugin,
         relative_path: candidate.relative_path,
+        language: candidate.language,
+        read_duration,
+        extract_duration,
         facts,
     })
 }
@@ -332,7 +394,7 @@ fn insert_index_data(
     let mut summary = BuildSummary {
         walk_plugins: walk_stats.plugins,
         files_seen: walk_stats.files_seen,
-        candidates: walk_stats.candidates,
+        candidates: candidates.len(),
         skipped_large: walk_stats.skipped_large,
         skipped_unsupported: walk_stats.skipped_unsupported,
         ..BuildSummary::default()
@@ -528,30 +590,38 @@ fn insert_metadata(
 
 fn query_surface(
     connection: &Connection,
-    surface: &str,
+    pattern: &str,
     include_low_confidence: bool,
     only_high_confidence: bool,
     max_evidence: usize,
 ) -> Result<QueryResult> {
+    let query = SurfaceQuery::from_input(pattern);
     let min_confidence = if include_low_confidence { 1 } else { 2 };
     let require_high = if only_high_confidence { 1 } else { 0 };
+    let surface_filter = query.sql_filter();
+    let surface_value = query.sql_value();
 
-    let (affected_plugins, total_usages): (i64, i64) = connection.query_row(
+    let count_sql = format!(
         "
-        select count(distinct e.plugin_id), count(*)
+        select count(distinct s.id), count(distinct e.plugin_id), count(*)
         from evidence e
         join surface s on s.id = e.surface_id
-        where s.key = ?1
+        where {surface_filter}
             and e.confidence >= ?2
             and (?3 = 0 or e.confidence = 3)
-        ",
-        params![surface, min_confidence, require_high],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
+        "
+    );
+    let (matched_surfaces, affected_plugins, total_usages): (i64, i64, i64) = connection
+        .query_row(
+            &count_sql,
+            params![surface_value, min_confidence, require_high],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
 
-    let mut statement = connection.prepare(
+    let evidence_sql = format!(
         "
         select
+            s.key,
             p.name,
             p.path,
             f.path,
@@ -564,27 +634,30 @@ fn query_surface(
         join surface s on s.id = e.surface_id
         join plugin p on p.id = e.plugin_id
         join file f on f.id = e.file_id
-        where s.key = ?1
+        where {surface_filter}
             and e.confidence >= ?2
             and (?3 = 0 or e.confidence = 3)
-        order by e.confidence desc, p.name asc, f.path asc, e.line asc, coalesce(e.column, 0) asc, e.usage_kind asc
+        order by s.key asc, e.confidence desc, p.name asc, f.path asc, e.line asc, coalesce(e.column, 0) asc, e.usage_kind asc
         limit ?4
-        ",
-    )?;
+        "
+    );
+
+    let mut statement = connection.prepare(&evidence_sql)?;
     let max_evidence = i64::try_from(max_evidence).unwrap_or(i64::MAX);
     let evidence = statement
         .query_map(
-            params![surface, min_confidence, require_high, max_evidence],
+            params![surface_value, min_confidence, require_high, max_evidence],
             |row| {
-                let confidence: i64 = row.get(7)?;
+                let confidence: i64 = row.get(8)?;
                 Ok(QueryEvidence {
-                    plugin_name: row.get(0)?,
-                    plugin_folder: row.get(1)?,
-                    file_path: row.get(2)?,
-                    line: i64_to_usize(row.get(3)?),
-                    column: row.get::<_, Option<i64>>(4)?.map(i64_to_usize),
-                    usage_kind: row.get(5)?,
-                    snippet: row.get(6)?,
+                    surface: row.get(0)?,
+                    plugin_name: row.get(1)?,
+                    plugin_folder: row.get(2)?,
+                    file_path: row.get(3)?,
+                    line: i64_to_usize(row.get(4)?),
+                    column: row.get::<_, Option<i64>>(5)?.map(i64_to_usize),
+                    usage_kind: row.get(6)?,
+                    snippet: row.get(7)?,
                     confidence: Confidence::from_i64(confidence),
                 })
             },
@@ -592,11 +665,95 @@ fn query_surface(
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
     Ok(QueryResult {
-        surface: surface.to_owned(),
+        query,
+        matched_surfaces: i64_to_usize(matched_surfaces),
         affected_plugins: i64_to_usize(affected_plugins),
         total_usages: i64_to_usize(total_usages),
         evidence,
     })
+}
+
+impl SurfaceQuery {
+    fn from_input(input: &str) -> Self {
+        if contains_wildcard(input) {
+            return SurfaceQuery::Pattern {
+                input: input.to_owned(),
+                like_pattern: wildcard_to_like(input),
+            };
+        }
+
+        if input.contains(':') {
+            SurfaceQuery::Exact(input.to_owned())
+        } else {
+            SurfaceQuery::Pattern {
+                input: input.to_owned(),
+                like_pattern: format!("%{}%", escape_like(input)),
+            }
+        }
+    }
+
+    fn is_pattern(&self) -> bool {
+        matches!(self, SurfaceQuery::Pattern { .. })
+    }
+
+    fn input(&self) -> &str {
+        match self {
+            SurfaceQuery::Exact(input) => input,
+            SurfaceQuery::Pattern { input, .. } => input,
+        }
+    }
+
+    fn sql_filter(&self) -> &'static str {
+        match self {
+            SurfaceQuery::Exact(_) => "s.key = ?1",
+            SurfaceQuery::Pattern { .. } => "s.key like ?1 escape '\\'",
+        }
+    }
+
+    fn sql_value(&self) -> &str {
+        match self {
+            SurfaceQuery::Exact(input) => input,
+            SurfaceQuery::Pattern { like_pattern, .. } => like_pattern,
+        }
+    }
+}
+
+fn contains_wildcard(input: &str) -> bool {
+    input
+        .chars()
+        .any(|character| matches!(character, '*' | '?'))
+}
+
+fn wildcard_to_like(input: &str) -> String {
+    let mut pattern = String::new();
+
+    for character in input.chars() {
+        match character {
+            '*' => pattern.push('%'),
+            '?' => pattern.push('_'),
+            _ => push_escaped_like_char(&mut pattern, character),
+        }
+    }
+
+    pattern
+}
+
+fn escape_like(input: &str) -> String {
+    let mut pattern = String::new();
+
+    for character in input.chars() {
+        push_escaped_like_char(&mut pattern, character);
+    }
+
+    pattern
+}
+
+fn push_escaped_like_char(pattern: &mut String, character: char) {
+    if matches!(character, '%' | '_' | '\\') {
+        pattern.push('\\');
+    }
+
+    pattern.push(character);
 }
 
 fn print_index_summary(out: &Path, summary: &BuildSummary) {
@@ -619,6 +776,45 @@ fn print_index_summary(out: &Path, summary: &BuildSummary) {
     );
 }
 
+fn print_index_timings(
+    discover_elapsed: Duration,
+    extract_elapsed: Duration,
+    sqlite_elapsed: Duration,
+    extraction_timings: &ExtractionTimings,
+) {
+    eprintln!(
+        "Timings: discovery {}, extraction wall {}, SQLite write/index {}.",
+        format_duration(discover_elapsed),
+        format_duration(extract_elapsed),
+        format_duration(sqlite_elapsed),
+    );
+
+    for language in [
+        Language::Php,
+        Language::Twig,
+        Language::Xml,
+        Language::Json,
+        Language::Yaml,
+        Language::Toml,
+        Language::JavaScript,
+        Language::TypeScript,
+        Language::Vue,
+    ] {
+        let Some(timing) = extraction_timings.languages.get(&language) else {
+            continue;
+        };
+
+        eprintln!(
+            "  {:<10} files {:>7}, facts {:>8}, read {}, extractor accumulated {}.",
+            language_label(language),
+            timing.files,
+            timing.facts,
+            format_duration(timing.read_duration),
+            format_duration(timing.extract_duration),
+        );
+    }
+}
+
 fn print_index_duration(out: &Path, summary: &BuildSummary, elapsed: Duration) {
     eprintln!(
         "Indexed {} plugins, {} candidate files, and {} evidence rows into {} in {}.",
@@ -631,7 +827,12 @@ fn print_index_duration(out: &Path, summary: &BuildSummary, elapsed: Duration) {
 }
 
 fn print_query_result(result: &QueryResult) {
-    println!("Surface: {}", result.surface);
+    if result.query.is_pattern() {
+        println!("Query: {}", result.query.input());
+        println!("Matching surfaces: {}", result.matched_surfaces);
+    } else {
+        println!("Surface: {}", result.query.input());
+    }
     println!("Affected plugins: {}", result.affected_plugins);
     println!("Usages: {}", result.total_usages);
 
@@ -676,6 +877,10 @@ fn print_query_result(result: &QueryResult) {
         .unwrap_or("Usage".len());
 
     for evidence in &result.evidence {
+        if result.query.is_pattern() {
+            println!("{}", evidence.surface);
+        }
+
         println!(
             "{:<plugin_width$}  {:<location_width$}  {:<usage_width$}  {}",
             evidence.plugin_name,
@@ -698,6 +903,10 @@ fn print_query_result(result: &QueryResult) {
             " ".repeat(plugin_width + 2),
             evidence.github_url()
         );
+
+        if result.query.is_pattern() {
+            println!();
+        }
     }
 }
 
@@ -741,6 +950,21 @@ fn path_display(path: &Path) -> String {
 
 fn plugin_folder(path: &Path) -> String {
     path_file_name(path)
+}
+
+fn language_label(language: Language) -> &'static str {
+    match language {
+        Language::Php => "php",
+        Language::Twig => "twig",
+        Language::Xml => "xml",
+        Language::Json => "json",
+        Language::Yaml => "yaml",
+        Language::Toml => "toml",
+        Language::JavaScript => "js",
+        Language::TypeScript => "ts",
+        Language::Vue => "vue",
+        Language::Unknown => "unknown",
+    }
 }
 
 fn format_duration(duration: Duration) -> String {
