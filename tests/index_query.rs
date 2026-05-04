@@ -87,7 +87,10 @@ final class CartSubscriber
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Affected plugins: 1"))
+        .stdout(predicate::str::contains("Shopware Impact Query"))
+        .stdout(predicate::str::contains(
+            "Affected plugins:    1 / 1 (100.0%)",
+        ))
         .stdout(predicate::str::contains("swag/cart"))
         .stdout(predicate::str::contains("src/CartSubscriber.php"))
         .stdout(predicate::str::contains(
@@ -104,7 +107,7 @@ final class CartSubscriber
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Query: Cart"))
+        .stdout(predicate::str::contains("Query:               Cart"))
         .stdout(predicate::str::contains("Matching surfaces:"))
         .stdout(predicate::str::contains(
             "php:class:Shopware\\Core\\Checkout\\Cart\\CartService",
@@ -121,7 +124,9 @@ final class CartSubscriber
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Query: php:class:*CartService"))
+        .stdout(predicate::str::contains(
+            "Query:               php:class:*CartService",
+        ))
         .stdout(predicate::str::contains(
             "php:class:Shopware\\Core\\Checkout\\Cart\\CartService",
         ));

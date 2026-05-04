@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
+use std::env;
 use std::fs;
+use std::io::{self, IsTerminal};
 use std::path::Path;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
@@ -10,13 +13,15 @@ use crate::extract;
 use crate::git;
 use crate::model::{ChangeKind, ChangedSurface, Confidence, Fact, FactRole, Parameter, Signature};
 use crate::report::{
-    ImpactEvidence, ImpactReport, SurfaceImpact, format_human_report, sort_impacts,
+    ImpactEvidence, ImpactReport, ReportOptions, SurfaceImpact, format_human_report_with_options,
+    sort_impacts,
 };
 use crate::walker::{Language, language_for_path};
 
 const DEFAULT_BASE: &str = "origin/trunk";
 
 pub fn run_check(args: CheckArgs, verbose: bool) -> Result<()> {
+    let started_at = Instant::now();
     let worktree = git::worktree_root(&args.shopware)?;
     let base = resolve_check_base(&worktree, &args.base)?;
     let merge_base = base.revision.as_str();
@@ -39,6 +44,7 @@ pub fn run_check(args: CheckArgs, verbose: bool) -> Result<()> {
         args.max_evidence_per_surface,
     )?;
     sort_impacts(&mut impacts);
+    let indexed_plugins = indexed_plugin_count(&args.index)?;
 
     if verbose {
         tracing::info!(
@@ -51,12 +57,34 @@ pub fn run_check(args: CheckArgs, verbose: bool) -> Result<()> {
     let report = ImpactReport {
         base: base.label,
         compared: "working tree".to_owned(),
+        elapsed: Some(started_at.elapsed()),
+        indexed_plugins: Some(indexed_plugins),
         changed_surfaces: changed_surfaces.len(),
         impacts,
     };
 
-    print!("{}", format_human_report(&report));
+    print!(
+        "{}",
+        format_human_report_with_options(
+            &report,
+            ReportOptions {
+                terminal_links: stdout_supports_links(),
+            },
+        )
+    );
     Ok(())
+}
+
+fn stdout_supports_links() -> bool {
+    if !io::stdout().is_terminal() {
+        return false;
+    }
+
+    if env::var_os("SW_IMPACT_NO_LINKS").is_some() {
+        return false;
+    }
+
+    env::var("TERM").map_or(true, |term| term != "dumb")
 }
 
 struct CheckBase {
@@ -294,6 +322,16 @@ fn lookup_impacts(
     }
 
     Ok(impacts)
+}
+
+fn indexed_plugin_count(index_path: &Path) -> Result<usize> {
+    let connection = Connection::open(index_path)
+        .with_context(|| format!("failed to open index {}", index_path.display()))?;
+    let count: i64 = connection
+        .query_row("select count(*) from plugin", [], |row| row.get(0))
+        .context("failed to query indexed plugin count")?;
+
+    non_negative_usize(count, "plugin count")
 }
 
 fn lookup_surface_impact(

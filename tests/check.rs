@@ -112,9 +112,9 @@ class CartService
         .stdout(predicate::str::contains(
             "php:method:Shopware\\Core\\Checkout\\Cart\\CartService::recalculate",
         ))
-        .stdout(predicate::str::contains("change: removed"))
+        .stdout(predicate::str::contains("change:           removed"))
         .stdout(predicate::str::contains(
-            "shopware source: src/Core/Checkout/Cart/CartService.php:7",
+            "shopware source:  src/Core/Checkout/Cart/CartService.php:7",
         ))
         .stdout(predicate::str::contains(
             "public function recalculate(): void",
@@ -136,7 +136,7 @@ class CartService
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Base: HEAD"))
+        .stdout(predicate::str::contains("Base:                HEAD"))
         .stdout(predicate::str::contains(
             "php:method:Shopware\\Core\\Checkout\\Cart\\CartService::recalculate",
         ))
@@ -235,7 +235,7 @@ fn check_ignores_shopware_xml_changes() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Changed surfaces: 0"))
+        .stdout(predicate::str::contains("Changed surfaces:    0"))
         .stdout(predicate::str::contains(
             "No changed Shopware definition surfaces found.",
         ))
@@ -323,12 +323,14 @@ const repo = repositoryFactory.create('product');
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Changed surfaces: 1"))
+        .stdout(predicate::str::contains("Changed surfaces:    1"))
         .stdout(predicate::str::contains(
             "admin:component:sw-product-detail",
         ))
-        .stdout(predicate::str::contains("surface kind: admin-component"))
-        .stdout(predicate::str::contains("change: removed"))
+        .stdout(predicate::str::contains(
+            "surface kind:     admin-component",
+        ))
+        .stdout(predicate::str::contains("change:           removed"))
         .stdout(predicate::str::contains("affected plugins: 1"))
         .stdout(predicate::str::contains("swag/product-extension"))
         .stdout(predicate::str::contains("dal:entity:product").not());
@@ -429,8 +431,8 @@ fn check_reports_removed_twig_block_impact() {
         .stdout(predicate::str::contains(
             "twig:block:sw_product_detail_content_tabs_reviews",
         ))
-        .stdout(predicate::str::contains("surface kind: twig-block"))
-        .stdout(predicate::str::contains("change: removed"))
+        .stdout(predicate::str::contains("surface kind:     twig-block"))
+        .stdout(predicate::str::contains("change:           removed"))
         .stdout(predicate::str::contains("affected plugins: 1"))
         .stdout(predicate::str::contains("swag/admin-block"));
 }
