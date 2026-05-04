@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write;
 use std::path::PathBuf;
 
-use crate::model::{ChangedSurface, Confidence};
+use crate::model::{ChangeKind, ChangedSurface, Confidence};
 use crate::source_link::store_plugin_mirror_url;
 
 #[derive(Debug, Clone)]
@@ -101,6 +101,21 @@ pub fn format_human_report(report: &ImpactReport) -> String {
         writeln!(output, "{}", impact.changed.surface).unwrap();
         writeln!(output, "surface kind: {}", impact.changed.kind.as_str()).unwrap();
         writeln!(output, "change: {}", impact.changed.change.as_str()).unwrap();
+        writeln!(
+            output,
+            "shopware source: {}",
+            changed_surface_location(&impact.changed)
+        )
+        .unwrap();
+        if let Some(snippet) = impact
+            .changed
+            .evidence
+            .snippet
+            .as_deref()
+            .filter(|snippet| !snippet.is_empty())
+        {
+            writeln!(output, "  {}", snippet).unwrap();
+        }
         writeln!(output, "confidence: {}", impact.confidence.as_str()).unwrap();
         writeln!(output, "affected plugins: {}", impact.affected_plugins).unwrap();
         writeln!(output, "usages: {}", impact.usage_count).unwrap();
@@ -161,6 +176,25 @@ fn plugin_label(evidence: &ImpactEvidence) -> String {
 
 fn evidence_location(evidence: &ImpactEvidence) -> String {
     format!("{}:{}", evidence.file_path.display(), evidence.line)
+}
+
+fn changed_surface_location(changed: &ChangedSurface) -> String {
+    let mut location = format!(
+        "{}:{}",
+        changed.evidence.path.display(),
+        changed.evidence.line
+    );
+
+    if let Some(column) = changed.evidence.column {
+        write!(location, ":{column}").unwrap();
+    }
+
+    let tree = match &changed.change {
+        ChangeKind::Removed => "base",
+        _ => "working tree",
+    };
+
+    format!("{location} ({tree})")
 }
 
 impl ImpactEvidence {
@@ -250,6 +284,8 @@ mod tests {
         assert!(formatted.contains("High confidence impact"));
         assert!(formatted.contains("php:method:Shopware\\Core\\Foo::bar"));
         assert!(formatted.contains("change: removed"));
+        assert!(formatted.contains("shopware source: src/Core/Foo.php:10:5 (base)"));
+        assert!(formatted.contains("public function removed(): void"));
         assert!(formatted.contains("affected plugins: 2"));
         assert!(formatted.contains("PluginA@1.2.3"));
         assert!(formatted.contains("... 2 more evidence row(s) omitted"));

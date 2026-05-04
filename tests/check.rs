@@ -113,6 +113,12 @@ class CartService
             "php:method:Shopware\\Core\\Checkout\\Cart\\CartService::recalculate",
         ))
         .stdout(predicate::str::contains("change: removed"))
+        .stdout(predicate::str::contains(
+            "shopware source: src/Core/Checkout/Cart/CartService.php:7",
+        ))
+        .stdout(predicate::str::contains(
+            "public function recalculate(): void",
+        ))
         .stdout(predicate::str::contains("affected plugins: 1"))
         .stdout(predicate::str::contains("swag/cart"))
         .stdout(predicate::str::contains(
@@ -135,6 +141,105 @@ class CartService
             "php:method:Shopware\\Core\\Checkout\\Cart\\CartService::recalculate",
         ))
         .stdout(predicate::str::contains("affected plugins: 1"));
+}
+
+#[test]
+fn check_ignores_shopware_xml_changes() {
+    let temp = tempdir().expect("tempdir");
+    let plugins = temp.path().join("plugins");
+    let plugin = plugins.join("SwagLanguage");
+    let plugin_config = plugin.join("src/Resources/config");
+    let index = temp.path().join("plugins.sqlite");
+    let shopware = temp.path().join("shopware");
+    let shopware_config = shopware.join("src/Core/Content/DependencyInjection");
+    let mail_template = shopware_config.join("mail_template.xml");
+
+    fs::create_dir_all(&plugin_config).expect("create plugin config");
+    fs::write(plugin.join("composer.json"), r#"{"name":"swag/language"}"#).expect("write composer");
+    fs::write(
+        plugin_config.join("services.xml"),
+        r#"<container>
+  <services>
+    <service id="swag.language.consumer">
+      <argument type="service" id="language.repository"/>
+    </service>
+  </services>
+</container>
+"#,
+    )
+    .expect("write plugin services");
+
+    Command::cargo_bin("sw-impact")
+        .expect("binary exists")
+        .args([
+            "index",
+            "--plugins",
+            plugins.to_str().expect("utf-8 plugins path"),
+            "--out",
+            index.to_str().expect("utf-8 index path"),
+        ])
+        .assert()
+        .success();
+
+    fs::create_dir_all(&shopware_config).expect("create shopware config");
+    fs::write(
+        &mail_template,
+        r#"<container>
+  <services>
+    <service id="shopware.mail_template.service"/>
+  </services>
+</container>
+"#,
+    )
+    .expect("write base shopware xml");
+
+    git(&shopware, ["init", "--initial-branch=main"]).expect("git init");
+    git(&shopware, ["add", "."]).expect("git add");
+    git(
+        &shopware,
+        [
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "base",
+        ],
+    )
+    .expect("git commit");
+
+    fs::write(
+        &mail_template,
+        r#"<container>
+  <services>
+    <service id="shopware.mail_template.service">
+      <argument type="service" id="language.repository"/>
+    </service>
+  </services>
+</container>
+"#,
+    )
+    .expect("add service reference in shopware xml");
+
+    Command::cargo_bin("sw-impact")
+        .expect("binary exists")
+        .args([
+            "check",
+            "--shopware",
+            shopware.to_str().expect("utf-8 shopware path"),
+            "--base",
+            "HEAD",
+            "--index",
+            index.to_str().expect("utf-8 index path"),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Changed surfaces: 0"))
+        .stdout(predicate::str::contains(
+            "No changed Shopware definition surfaces found.",
+        ))
+        .stdout(predicate::str::contains("service:id:language.repository").not());
 }
 
 fn git<const N: usize>(repo: &Path, args: [&str; N]) -> std::io::Result<()> {

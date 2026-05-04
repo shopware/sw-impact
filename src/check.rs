@@ -95,7 +95,7 @@ fn collect_changed_surfaces(
 
     for relative_path in changed_files {
         let language = language_for_path(relative_path);
-        if language == Language::Unknown {
+        if !is_check_definition_language(language) {
             continue;
         }
 
@@ -109,6 +109,19 @@ fn collect_changed_surfaces(
     }
 
     Ok(diff_definitions(&base_definitions, &current_definitions))
+}
+
+fn is_check_definition_language(language: Language) -> bool {
+    matches!(
+        language,
+        Language::Php
+            | Language::Json
+            | Language::Yaml
+            | Language::Toml
+            | Language::JavaScript
+            | Language::TypeScript
+            | Language::Vue
+    )
 }
 
 fn extract_definitions(
