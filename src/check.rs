@@ -69,6 +69,7 @@ pub fn run_check(args: CheckArgs, verbose: bool) -> Result<()> {
             &report,
             ReportOptions {
                 terminal_links: stdout_supports_links(),
+                max_surfaces: Some(args.max_surfaces),
             },
         )
     );

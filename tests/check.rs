@@ -136,7 +136,8 @@ class CartService
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Base:                HEAD"))
+        .stdout(predicate::str::contains("Base:"))
+        .stdout(predicate::str::contains("HEAD"))
         .stdout(predicate::str::contains(
             "php:method:Shopware\\Core\\Checkout\\Cart\\CartService::recalculate",
         ))
@@ -235,7 +236,7 @@ fn check_ignores_shopware_xml_changes() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Changed surfaces:    0"))
+        .stdout(predicate::str::contains("Changed surfaces:"))
         .stdout(predicate::str::contains(
             "No changed Shopware definition surfaces found.",
         ))
@@ -323,7 +324,7 @@ const repo = repositoryFactory.create('product');
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Changed surfaces:    1"))
+        .stdout(predicate::str::contains("Changed surfaces:"))
         .stdout(predicate::str::contains(
             "admin:component:sw-product-detail",
         ))

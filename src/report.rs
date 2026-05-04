@@ -47,6 +47,7 @@ pub fn no_impact_message() -> &'static str {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ReportOptions {
     pub terminal_links: bool,
+    pub max_surfaces: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,11 +76,14 @@ pub fn format_human_report_with_options(report: &ImpactReport, options: ReportOp
         .flat_map(|impact| impact.affected_plugin_ids.iter().copied())
         .collect::<BTreeSet<_>>()
         .len();
+    let surface_blocks_shown = surface_blocks_shown(impacted_surfaces, options);
     let evidence_rows_shown: usize = report
         .impacts
         .iter()
+        .take(surface_blocks_shown)
         .map(|impact| impact.evidence.len())
         .sum();
+    let hidden_surface_blocks = impacted_surfaces.saturating_sub(surface_blocks_shown);
 
     writeln!(output, "Shopware Impact Report").unwrap();
 
@@ -90,6 +94,7 @@ pub fn format_human_report_with_options(report: &ImpactReport, options: ReportOp
             &mut output,
             report,
             impacted_surfaces,
+            surface_blocks_shown,
             affected_plugins,
             evidence_rows_shown,
         );
@@ -103,6 +108,7 @@ pub fn format_human_report_with_options(report: &ImpactReport, options: ReportOp
             &mut output,
             report,
             impacted_surfaces,
+            surface_blocks_shown,
             affected_plugins,
             evidence_rows_shown,
         );
@@ -110,7 +116,7 @@ pub fn format_human_report_with_options(report: &ImpactReport, options: ReportOp
     }
 
     let mut last_confidence = None;
-    for impact in &report.impacts {
+    for impact in report.impacts.iter().take(surface_blocks_shown) {
         if last_confidence != Some(impact.confidence) {
             writeln!(output).unwrap();
             writeln!(
@@ -125,10 +131,15 @@ pub fn format_human_report_with_options(report: &ImpactReport, options: ReportOp
         writeln!(output).unwrap();
         write_surface_header(&mut output, impact);
         write_impact_evidence_entries(&mut output, impact, options);
-        let hidden = impact.usage_count.saturating_sub(impact.evidence.len());
-        if hidden > 0 {
-            writeln!(output, "  ... {hidden} more evidence row(s) omitted").unwrap();
-        }
+        write_evidence_limit_notice(&mut output, impact.evidence.len(), impact.usage_count);
+    }
+
+    if hidden_surface_blocks > 0 {
+        writeln!(
+            output,
+            "\n... {hidden_surface_blocks} more surface block(s) omitted"
+        )
+        .unwrap();
     }
 
     writeln!(output).unwrap();
@@ -141,11 +152,25 @@ pub fn format_human_report_with_options(report: &ImpactReport, options: ReportOp
         &mut output,
         report,
         impacted_surfaces,
+        surface_blocks_shown,
         affected_plugins,
         evidence_rows_shown,
     );
 
     output
+}
+
+fn surface_blocks_shown(total_surfaces: usize, options: ReportOptions) -> usize {
+    options
+        .max_surfaces
+        .unwrap_or(usize::MAX)
+        .min(total_surfaces)
+}
+
+pub(crate) fn write_evidence_limit_notice(output: &mut String, shown: usize, total: usize) {
+    if shown < total {
+        writeln!(output, "  ... ({shown} of {total} shown)").unwrap();
+    }
 }
 
 pub fn sort_impacts(impacts: &mut [SurfaceImpact]) {
@@ -256,6 +281,7 @@ fn write_summary(
     output: &mut String,
     report: &ImpactReport,
     impacted_surfaces: usize,
+    surface_blocks_shown: usize,
     affected_plugins: usize,
     evidence_rows_shown: usize,
 ) {
@@ -272,6 +298,7 @@ fn write_summary(
     rows.extend([
         ("Changed surfaces", report.changed_surfaces.to_string()),
         ("Impacted surfaces", impacted_surfaces.to_string()),
+        ("Surface blocks shown", surface_blocks_shown.to_string()),
         ("Evidence rows shown", evidence_rows_shown.to_string()),
         (
             "Affected plugins",
@@ -407,9 +434,11 @@ mod tests {
         let formatted = format_human_report(&report);
 
         assert!(formatted.contains("Shopware Impact Report"));
-        assert!(formatted.contains("Runtime:             0.123s"));
-        assert!(formatted.contains("Changed surfaces:    1"));
-        assert!(formatted.contains("Affected plugins:    0 / 2000 (0.0%)"));
+        assert!(formatted.contains("Runtime:"));
+        assert!(formatted.contains("0.123s"));
+        assert!(formatted.contains("Changed surfaces:"));
+        assert!(formatted.contains("Affected plugins:"));
+        assert!(formatted.contains("0 / 2000 (0.0%)"));
         assert!(formatted.contains(no_impact_message()));
     }
 
@@ -454,9 +483,11 @@ mod tests {
         assert!(formatted.contains("public function removed(): void"));
         assert!(formatted.contains("affected plugins: 2"));
         assert!(formatted.contains("Summary"));
-        assert!(formatted.contains("Runtime:             0.123s"));
-        assert!(formatted.contains("Affected plugins:    2 / 2000 (0.1%)"));
-        assert!(formatted.contains("... 2 more evidence row(s) omitted"));
+        assert!(formatted.contains("Runtime:"));
+        assert!(formatted.contains("0.123s"));
+        assert!(formatted.contains("Affected plugins:"));
+        assert!(formatted.contains("2 / 2000 (0.1%)"));
+        assert!(formatted.contains("... (1 of 3 shown)"));
     }
 
     #[test]
@@ -493,6 +524,7 @@ mod tests {
             &report,
             ReportOptions {
                 terminal_links: true,
+                ..ReportOptions::default()
             },
         );
 

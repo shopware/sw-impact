@@ -74,8 +74,11 @@ pub struct CheckArgs {
     #[arg(long)]
     pub only_high_confidence: bool,
 
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 10)]
     pub max_evidence_per_surface: usize,
+
+    #[arg(long, default_value_t = 5)]
+    pub max_surfaces: usize,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -89,8 +92,11 @@ pub struct QueryArgs {
     #[arg(long)]
     pub only_high_confidence: bool,
 
-    #[arg(long, default_value_t = 50)]
-    pub max_evidence: usize,
+    #[arg(long, visible_alias = "max-evidence", default_value_t = 10)]
+    pub max_evidence_per_surface: usize,
+
+    #[arg(long, default_value_t = 5)]
+    pub max_surfaces: usize,
 
     pub pattern: String,
 }

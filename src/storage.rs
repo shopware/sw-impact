@@ -15,7 +15,7 @@ use crate::extract::extract_facts;
 use crate::model::{Confidence, Fact, FactRole};
 use crate::report::{
     EvidenceDisplay, ReportOptions, SEPARATOR, affected_plugins_summary, write_aligned_key_values,
-    write_dashed_block, write_numbered_evidence_entries,
+    write_dashed_block, write_evidence_limit_notice, write_numbered_evidence_entries,
 };
 use crate::source_link::store_plugin_mirror_url;
 use crate::walker::{CandidateFile, Language, PluginInfo, WalkStats, discover_candidates};
@@ -97,7 +97,8 @@ pub fn query_index(args: QueryArgs) -> Result<()> {
         &args.pattern,
         args.include_low_confidence,
         args.only_high_confidence,
-        args.max_evidence,
+        args.max_surfaces,
+        args.max_evidence_per_surface,
     )
     .with_context(|| format!("query surface pattern {}", args.pattern))?;
     result.elapsed = Some(started_at.elapsed());
@@ -106,6 +107,7 @@ pub fn query_index(args: QueryArgs) -> Result<()> {
         &result,
         ReportOptions {
             terminal_links: stdout_supports_links(),
+            max_surfaces: Some(args.max_surfaces),
         },
     );
     Ok(())
@@ -170,6 +172,7 @@ struct QueryResult {
     total_usages: usize,
     indexed_plugins: usize,
     elapsed: Option<Duration>,
+    max_surfaces: usize,
     surfaces: Vec<QuerySurfaceResult>,
 }
 
@@ -722,7 +725,8 @@ fn query_surface(
     pattern: &str,
     include_low_confidence: bool,
     only_high_confidence: bool,
-    max_evidence: usize,
+    max_surfaces: usize,
+    max_evidence_per_surface: usize,
 ) -> Result<QueryResult> {
     let query = SurfaceQuery::from_input(pattern);
     let min_confidence = if include_low_confidence { 1 } else { 2 };
@@ -755,7 +759,36 @@ fn query_surface(
         require_high,
     )?;
 
-    let evidence_sql = format!(
+    for surface in surfaces.iter_mut().take(max_surfaces) {
+        surface.evidence = query_surface_evidence(
+            connection,
+            &surface.surface,
+            min_confidence,
+            require_high,
+            max_evidence_per_surface,
+        )?;
+    }
+
+    Ok(QueryResult {
+        query,
+        matched_surfaces: i64_to_usize(matched_surfaces),
+        affected_plugins: i64_to_usize(affected_plugins),
+        total_usages: i64_to_usize(total_usages),
+        indexed_plugins,
+        elapsed: None,
+        max_surfaces,
+        surfaces,
+    })
+}
+
+fn query_surface_evidence(
+    connection: &Connection,
+    surface: &str,
+    min_confidence: i64,
+    require_high: i64,
+    max_evidence_per_surface: usize,
+) -> Result<Vec<QueryEvidence>> {
+    let mut statement = connection.prepare(
         "
         select
             s.key,
@@ -772,19 +805,17 @@ fn query_surface(
         join surface s on s.id = e.surface_id
         join plugin p on p.id = e.plugin_id
         join file f on f.id = e.file_id
-        where {surface_filter}
+        where s.key = ?1
             and e.confidence >= ?2
             and (?3 = 0 or e.confidence = 3)
-        order by s.key asc, e.confidence desc, p.name asc, f.path asc, e.line asc, coalesce(e.column, 0) asc, e.usage_kind asc
+        order by e.confidence desc, p.name asc, f.path asc, e.line asc, coalesce(e.column, 0) asc, e.usage_kind asc
         limit ?4
-        "
-    );
-
-    let mut statement = connection.prepare(&evidence_sql)?;
-    let max_evidence = i64::try_from(max_evidence).unwrap_or(i64::MAX);
+        ",
+    )?;
+    let limit = i64::try_from(max_evidence_per_surface).unwrap_or(i64::MAX);
     let evidence = statement
         .query_map(
-            params![surface_value, min_confidence, require_high, max_evidence],
+            params![surface, min_confidence, require_high, limit],
             |row| {
                 let confidence: i64 = row.get(9)?;
                 Ok(QueryEvidence {
@@ -803,27 +834,7 @@ fn query_surface(
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    let surface_positions = surfaces
-        .iter()
-        .enumerate()
-        .map(|(index, surface)| (surface.surface.clone(), index))
-        .collect::<HashMap<_, _>>();
-
-    for evidence in evidence {
-        if let Some(index) = surface_positions.get(&evidence.surface) {
-            surfaces[*index].evidence.push(evidence);
-        }
-    }
-
-    Ok(QueryResult {
-        query,
-        matched_surfaces: i64_to_usize(matched_surfaces),
-        affected_plugins: i64_to_usize(affected_plugins),
-        total_usages: i64_to_usize(total_usages),
-        indexed_plugins,
-        elapsed: None,
-        surfaces,
-    })
+    Ok(evidence)
 }
 
 fn query_surface_totals(
@@ -1024,20 +1035,23 @@ fn print_index_duration(out: &Path, summary: &BuildSummary, elapsed: Duration) {
 fn print_query_result(result: &QueryResult, options: ReportOptions) {
     let mut output = String::new();
     writeln!(output, "Shopware Impact Query").unwrap();
-    let evidence_rows_shown = result.evidence_rows_shown();
 
     if result.total_usages == 0 {
         writeln!(output).unwrap();
         writeln!(output, "No evidence found.").unwrap();
-    } else if evidence_rows_shown == 0 {
+    } else if result.surface_blocks_shown() == 0 {
         writeln!(output).unwrap();
-        writeln!(output, "Evidence output limited to 0 rows.").unwrap();
+        writeln!(output, "Surface output limited to 0 blocks.").unwrap();
     } else {
         writeln!(output).unwrap();
         write_query_surface_results(&mut output, result, options);
-        let hidden = result.total_usages.saturating_sub(evidence_rows_shown);
-        if hidden > 0 {
-            writeln!(output, "  ... {hidden} more evidence row(s) omitted").unwrap();
+        let hidden_surface_blocks = result.hidden_surface_blocks();
+        if hidden_surface_blocks > 0 {
+            writeln!(
+                output,
+                "\n... {hidden_surface_blocks} more surface block(s) omitted"
+            )
+            .unwrap();
         }
     }
 
@@ -1048,11 +1062,7 @@ fn print_query_result(result: &QueryResult, options: ReportOptions) {
 fn write_query_surface_results(output: &mut String, result: &QueryResult, options: ReportOptions) {
     let mut wrote_surface = false;
 
-    for surface in result
-        .surfaces
-        .iter()
-        .filter(|surface| !surface.evidence.is_empty())
-    {
+    for surface in result.visible_surfaces() {
         if wrote_surface {
             writeln!(output).unwrap();
         }
@@ -1071,6 +1081,7 @@ fn write_query_surface_results(output: &mut String, result: &QueryResult, option
             })
             .collect::<Vec<_>>();
         write_numbered_evidence_entries(output, &evidence, options);
+        write_evidence_limit_notice(output, surface.evidence.len(), surface.usage_count);
         wrote_surface = true;
     }
 }
@@ -1098,6 +1109,10 @@ fn write_query_summary(output: &mut String, result: &QueryResult) {
             rows.push(("Matching surfaces", result.matched_surfaces.to_string()));
         }
     }
+    rows.push((
+        "Surface blocks shown",
+        result.surface_blocks_shown().to_string(),
+    ));
     if let Some(elapsed) = result.elapsed {
         rows.push(("Runtime", format_duration(elapsed)));
     }
@@ -1136,10 +1151,22 @@ impl QueryEvidence {
 
 impl QueryResult {
     fn evidence_rows_shown(&self) -> usize {
-        self.surfaces
-            .iter()
+        self.visible_surfaces()
             .map(|surface| surface.evidence.len())
             .sum()
+    }
+
+    fn surface_blocks_shown(&self) -> usize {
+        self.max_surfaces.min(self.surfaces.len())
+    }
+
+    fn hidden_surface_blocks(&self) -> usize {
+        self.matched_surfaces
+            .saturating_sub(self.surface_blocks_shown())
+    }
+
+    fn visible_surfaces(&self) -> impl Iterator<Item = &QuerySurfaceResult> {
+        self.surfaces.iter().take(self.surface_blocks_shown())
     }
 
     #[cfg(test)]
@@ -1260,6 +1287,7 @@ mod tests {
             false,
             false,
             usize::MAX,
+            usize::MAX,
         )
         .expect("query default confidence");
         assert_eq!(default.affected_plugins, 1);
@@ -1272,8 +1300,15 @@ mod tests {
                 .all(|evidence| evidence.confidence != Confidence::Low)
         );
 
-        let include_low = query_surface(&connection, "service:id:shopware.foo", true, false, 1)
-            .expect("query with low confidence");
+        let include_low = query_surface(
+            &connection,
+            "service:id:shopware.foo",
+            true,
+            false,
+            usize::MAX,
+            1,
+        )
+        .expect("query with low confidence");
         assert_eq!(include_low.affected_plugins, 2);
         assert_eq!(include_low.total_usages, 4);
         assert_eq!(include_low.evidence_rows_shown(), 1);
@@ -1284,11 +1319,39 @@ mod tests {
             true,
             true,
             usize::MAX,
+            usize::MAX,
         )
         .expect("query only high confidence");
         assert_eq!(only_high.affected_plugins, 1);
         assert_eq!(only_high.total_usages, 1);
         assert_eq!(only_high.evidence_rows()[0].confidence, Confidence::High);
+    }
+
+    #[test]
+    fn query_surface_limits_surface_blocks_and_evidence_per_block() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let index_path = tempdir.path().join("index.sqlite");
+        let mut connection = Connection::open(index_path).expect("open database");
+        seed_query_fixture(&mut connection);
+
+        let result = query_surface(&connection, "service:id:shopware.*", true, false, 1, 1)
+            .expect("query pattern with limits");
+        assert_eq!(result.matched_surfaces, 2);
+        assert_eq!(result.surface_blocks_shown(), 1);
+        assert_eq!(result.hidden_surface_blocks(), 1);
+        assert_eq!(result.evidence_rows_shown(), 1);
+        assert_eq!(result.surfaces[0].evidence.len(), 1);
+        assert!(result.surfaces[1].evidence.is_empty());
+
+        let result = query_surface(&connection, "service:id:shopware.*", true, false, 2, 1)
+            .expect("query pattern with per-surface evidence limit");
+        assert_eq!(result.surface_blocks_shown(), 2);
+        assert_eq!(result.evidence_rows_shown(), 2);
+        assert!(
+            result
+                .visible_surfaces()
+                .all(|surface| surface.evidence.len() == 1)
+        );
     }
 
     fn seed_query_fixture(connection: &mut Connection) {
@@ -1325,6 +1388,12 @@ mod tests {
                 [],
             )
             .expect("insert surface");
+        transaction
+            .execute(
+                "insert into surface (id, key, kind) values (2, 'service:id:shopware.bar', 'service-id')",
+                [],
+            )
+            .expect("insert second surface");
 
         for (plugin_id, file_id, line, usage_kind, confidence) in [
             (1, 1, 10, "constructor", Confidence::High),
@@ -1356,6 +1425,36 @@ mod tests {
                     ],
                 )
                 .expect("insert evidence");
+        }
+
+        for (plugin_id, file_id, line, usage_kind, confidence) in [
+            (1, 1, 50, "constructor", Confidence::High),
+            (2, 2, 60, "string-ref", Confidence::Medium),
+        ] {
+            transaction
+                .execute(
+                    "
+                    insert into evidence (
+                        surface_id,
+                        plugin_id,
+                        file_id,
+                        line,
+                        column,
+                        usage_kind,
+                        snippet,
+                        confidence
+                    )
+                    values (2, ?1, ?2, ?3, null, ?4, null, ?5)
+                    ",
+                    params![
+                        plugin_id,
+                        file_id,
+                        line,
+                        usage_kind,
+                        confidence_value(confidence)
+                    ],
+                )
+                .expect("insert second surface evidence");
         }
 
         transaction
