@@ -11,7 +11,7 @@ use rayon::prelude::*;
 use rusqlite::{Connection, OpenFlags, Transaction, params};
 
 use crate::cli::{IndexArgs, QueryArgs};
-use crate::extract::extract_facts;
+use crate::extract::extract_facts_with_related_files;
 use crate::model::{Confidence, Fact, FactRole};
 use crate::report::{
     EvidenceDisplay, ReportOptions, SEPARATOR, affected_plugins_summary, write_aligned_key_values,
@@ -191,7 +191,6 @@ struct IndexInsertState {
 #[derive(Debug)]
 struct ExtractedCandidate {
     plugin: PluginInfo,
-    relative_path: PathBuf,
     language: Language,
     read_duration: Duration,
     extract_duration: Duration,
@@ -445,12 +444,16 @@ fn extract_candidate(
     let read_duration = read_started_at.elapsed();
 
     let extract_started_at = Instant::now();
-    let facts = extract_facts(
+    let mut related_files = |source_relative_path: &Path, import: &str| {
+        read_related_candidate_content(&candidate.plugin.root, source_relative_path, import)
+    };
+    let facts = extract_facts_with_related_files(
         candidate.language,
         &content,
         &candidate.relative_path,
         FactRole::Usage,
         include_snippets,
+        &mut related_files,
     )
     .with_context(|| {
         format!(
@@ -462,12 +465,60 @@ fn extract_candidate(
 
     Ok(ExtractedCandidate {
         plugin: candidate.plugin,
-        relative_path: candidate.relative_path,
         language: candidate.language,
         read_duration,
         extract_duration,
         facts,
     })
+}
+
+fn read_related_candidate_content(
+    plugin_root: &Path,
+    source_relative_path: &Path,
+    import: &str,
+) -> Result<Option<(PathBuf, String)>> {
+    if !import.ends_with(".twig") {
+        return Ok(None);
+    }
+
+    let Some(relative_path) = normalize_related_candidate_path(source_relative_path, import) else {
+        return Ok(None);
+    };
+    let absolute_path = plugin_root.join(&relative_path);
+    if !absolute_path.is_file() {
+        return Ok(None);
+    }
+
+    let content = read_candidate_content(&absolute_path)?;
+    Ok(Some((relative_path, content)))
+}
+
+fn normalize_related_candidate_path(source_relative_path: &Path, import: &str) -> Option<PathBuf> {
+    let import_path = Path::new(import);
+    if import_path.is_absolute() {
+        return None;
+    }
+
+    let base = source_relative_path
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let joined = base.join(import_path);
+    let mut normalized = PathBuf::new();
+
+    for component in joined.components() {
+        match component {
+            std::path::Component::Normal(component) => normalized.push(component),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized.pop() {
+                    return None;
+                }
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => return None,
+        }
+    }
+
+    Some(normalized)
 }
 
 fn parse_threads(value: &str) -> Result<Option<usize>> {
@@ -620,6 +671,7 @@ fn insert_extracted_candidates(
         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         ",
     )?;
+    let mut file_ids = HashMap::<(i64, String), i64>::new();
 
     for candidate in candidates {
         let plugin_path = plugin_folder(&candidate.plugin.root);
@@ -640,13 +692,6 @@ fn insert_extracted_candidates(
             state.plugin_ids.insert(plugin_key, plugin_id);
             plugin_id
         };
-
-        insert_file.execute(params![
-            plugin_id,
-            path_to_string(&candidate.relative_path),
-            Option::<Vec<u8>>::None,
-        ])?;
-        let file_id = transaction.last_insert_rowid();
 
         state.summary.facts_extracted += candidate.facts.len();
 
@@ -672,6 +717,16 @@ fn insert_extracted_candidates(
                 fact.evidence.snippet
             } else {
                 None
+            };
+            let evidence_path = path_to_string(&fact.evidence.path);
+            let file_key = (plugin_id, evidence_path);
+            let file_id = if let Some(file_id) = file_ids.get(&file_key) {
+                *file_id
+            } else {
+                insert_file.execute(params![plugin_id, &file_key.1, Option::<Vec<u8>>::None,])?;
+                let file_id = transaction.last_insert_rowid();
+                file_ids.insert(file_key, file_id);
+                file_id
             };
 
             insert_evidence.execute(params![

@@ -3,12 +3,15 @@ pub mod config;
 pub mod php;
 pub mod twig;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
 use crate::model::{Fact, FactRole};
 use crate::walker::Language;
+
+pub type RelatedFile = (PathBuf, String);
+pub type RelatedFileResolver<'a> = dyn FnMut(&Path, &str) -> Result<Option<RelatedFile>> + 'a;
 
 pub fn extract_facts(
     language: Language,
@@ -16,6 +19,25 @@ pub fn extract_facts(
     relative_path: &Path,
     role: FactRole,
     include_snippets: bool,
+) -> Result<Vec<Fact>> {
+    let mut resolver = |_: &Path, _: &str| Ok(None);
+    extract_facts_with_related_files(
+        language,
+        content,
+        relative_path,
+        role,
+        include_snippets,
+        &mut resolver,
+    )
+}
+
+pub fn extract_facts_with_related_files(
+    language: Language,
+    content: &str,
+    relative_path: &Path,
+    role: FactRole,
+    include_snippets: bool,
+    related_files: &mut RelatedFileResolver<'_>,
 ) -> Result<Vec<Fact>> {
     match language {
         Language::Php => php::extract(content, relative_path, role, include_snippets),
@@ -29,12 +51,13 @@ pub fn extract_facts(
         Language::Json => config::extract_json(content, relative_path, role, include_snippets),
         Language::Yaml => config::extract_yaml(content, relative_path, role, include_snippets),
         Language::Toml => config::extract_toml(content, relative_path, role, include_snippets),
-        Language::JavaScript | Language::TypeScript | Language::Vue => Ok(admin::extract(
+        Language::JavaScript | Language::TypeScript | Language::Vue => admin::extract_with_related(
             content,
             relative_path,
             role,
             include_snippets,
-        )),
+            related_files,
+        ),
         Language::Unknown => Ok(Vec::new()),
     }
 }

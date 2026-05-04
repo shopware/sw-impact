@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -241,19 +241,32 @@ fn collect_changed_surfaces(
 ) -> Result<Vec<ChangedSurface>> {
     let mut base_definitions = Vec::new();
     let mut current_definitions = Vec::new();
+    let admin_component_names =
+        admin_component_definition_map(worktree, merge_base, changed_files)?;
 
     for relative_path in changed_files {
         let language = language_for_path(relative_path);
         if !is_check_definition_language(language) {
             continue;
         }
+        let component_names = admin_component_names.get(relative_path);
 
         if let Some(content) = git::base_file_content(worktree, merge_base, relative_path)? {
-            base_definitions.extend(extract_definitions(language, &content, relative_path)?);
+            base_definitions.extend(extract_definitions(
+                language,
+                &content,
+                relative_path,
+                component_names,
+            )?);
         }
 
         if let Some(content) = current_file_content(worktree, relative_path)? {
-            current_definitions.extend(extract_definitions(language, &content, relative_path)?);
+            current_definitions.extend(extract_definitions(
+                language,
+                &content,
+                relative_path,
+                component_names,
+            )?);
         }
     }
 
@@ -274,19 +287,150 @@ fn is_check_definition_language(language: Language) -> bool {
     )
 }
 
+fn is_admin_script_language(language: Language) -> bool {
+    matches!(
+        language,
+        Language::JavaScript | Language::TypeScript | Language::Vue
+    )
+}
+
 fn extract_definitions(
     language: Language,
     content: &str,
     relative_path: &Path,
+    admin_component_names: Option<&BTreeSet<String>>,
 ) -> Result<Vec<Fact>> {
-    let facts =
+    let mut facts =
         extract::extract_facts(language, content, relative_path, FactRole::Definition, true)
             .with_context(|| format!("failed to extract facts from {}", relative_path.display()))?;
+
+    if is_admin_script_language(language)
+        && let Some(component_names) = admin_component_names
+    {
+        for component_name in component_names {
+            facts.extend(extract::admin::extract_component_option_definitions(
+                content,
+                relative_path,
+                component_name,
+                true,
+            ));
+        }
+    }
 
     Ok(facts
         .into_iter()
         .filter(|fact| fact.role == FactRole::Definition)
         .collect())
+}
+
+fn admin_component_definition_map(
+    worktree: &Path,
+    merge_base: &str,
+    changed_files: &[PathBuf],
+) -> Result<BTreeMap<PathBuf, BTreeSet<String>>> {
+    let changed_admin_files = changed_files
+        .iter()
+        .filter(|path| is_admin_script_language(language_for_path(path)))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if changed_admin_files.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let changed_admin_file_set = changed_admin_files.iter().cloned().collect::<BTreeSet<_>>();
+    let registration_files = admin_component_registration_candidates(&changed_admin_files);
+    let mut component_names: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
+
+    for registration_file in registration_files {
+        let registration_dir = registration_file.parent().unwrap_or_else(|| Path::new(""));
+        let mut contents = Vec::new();
+
+        if let Some(content) = current_file_content(worktree, &registration_file)? {
+            contents.push(content);
+        }
+        if let Some(content) = git::base_file_content(worktree, merge_base, &registration_file)? {
+            contents.push(content);
+        }
+
+        for content in contents {
+            for import in extract::admin::component_register_imports(&content) {
+                for candidate in component_import_candidates(registration_dir, &import.import) {
+                    if changed_admin_file_set.contains(&candidate) {
+                        component_names
+                            .entry(candidate)
+                            .or_default()
+                            .insert(import.component.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(component_names)
+}
+
+fn admin_component_registration_candidates(changed_files: &[PathBuf]) -> BTreeSet<PathBuf> {
+    let mut candidates = BTreeSet::new();
+
+    for changed_file in changed_files {
+        let mut directory = changed_file.parent();
+        while let Some(dir) = directory {
+            for file_name in ["index.js", "index.ts", "main.js", "main.ts"] {
+                candidates.insert(dir.join(file_name));
+            }
+            directory = dir.parent();
+        }
+    }
+
+    candidates
+}
+
+fn component_import_candidates(registration_dir: &Path, import: &str) -> Vec<PathBuf> {
+    if !is_relative_import(import) {
+        return Vec::new();
+    }
+
+    let Some(base_path) = normalize_relative_path(&registration_dir.join(import)) else {
+        return Vec::new();
+    };
+
+    if Path::new(import).extension().is_some() {
+        return vec![base_path];
+    }
+
+    let mut candidates = Vec::new();
+    for extension in ["js", "ts", "vue"] {
+        candidates.push(base_path.with_extension(extension));
+    }
+    for extension in ["js", "ts", "vue"] {
+        candidates.push(base_path.join(format!("index.{extension}")));
+    }
+
+    candidates
+}
+
+fn is_relative_import(import: &str) -> bool {
+    import.starts_with("./") || import.starts_with("../")
+}
+
+fn normalize_relative_path(path: &Path) -> Option<PathBuf> {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => normalized.push(part),
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return None;
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+
+    Some(normalized)
 }
 
 fn current_file_content(worktree: &Path, relative_path: &Path) -> Result<Option<String>> {

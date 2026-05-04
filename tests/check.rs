@@ -338,6 +338,254 @@ const repo = repositoryFactory.create('product');
 }
 
 #[test]
+fn check_reports_removed_admin_component_member_used_by_imported_plugin_template() {
+    let temp = tempdir().expect("tempdir");
+    let plugins = temp.path().join("plugins");
+    let plugin = plugins.join("SwagProductExtension");
+    let plugin_admin = plugin.join("src/Resources/app/administration/src");
+    let index = temp.path().join("plugins.sqlite");
+    let shopware = temp.path().join("shopware");
+    let shopware_admin =
+        shopware.join("src/Administration/Resources/app/administration/src/module/sw-product");
+    let module_index = shopware_admin.join("index.js");
+
+    fs::create_dir_all(&plugin_admin).expect("create plugin admin source");
+    fs::write(
+        plugin.join("composer.json"),
+        r#"{"name":"swag/product-extension"}"#,
+    )
+    .expect("write composer");
+    fs::write(
+        plugin_admin.join("main.js"),
+        r#"
+import template from './sw-product-detail.html.twig';
+
+Shopware.Component.override('sw-product-detail', {
+    template,
+});
+"#,
+    )
+    .expect("write plugin admin source");
+    fs::write(
+        plugin_admin.join("sw-product-detail.html.twig"),
+        r#"
+<template>
+    <div v-if="product">
+        {{ product.name }}
+    </div>
+</template>
+"#,
+    )
+    .expect("write plugin admin template");
+
+    Command::cargo_bin("sw-impact")
+        .expect("binary exists")
+        .args([
+            "index",
+            "--plugins",
+            plugins.to_str().expect("utf-8 plugins path"),
+            "--out",
+            index.to_str().expect("utf-8 index path"),
+        ])
+        .assert()
+        .success();
+
+    fs::create_dir_all(&shopware_admin).expect("create shopware admin source");
+    fs::write(
+        &module_index,
+        r#"
+Shopware.Component.register('sw-product-detail', {
+    computed: {
+        product() {
+            return {};
+        },
+    },
+});
+"#,
+    )
+    .expect("write base shopware module");
+
+    git(&shopware, ["init", "--initial-branch=main"]).expect("git init");
+    git(&shopware, ["add", "."]).expect("git add");
+    git(
+        &shopware,
+        [
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "base",
+        ],
+    )
+    .expect("git commit");
+
+    fs::write(
+        &module_index,
+        r#"
+Shopware.Component.register('sw-product-detail', {
+    computed: {},
+});
+"#,
+    )
+    .expect("remove computed property from current worktree");
+
+    Command::cargo_bin("sw-impact")
+        .expect("binary exists")
+        .args([
+            "check",
+            "--shopware",
+            shopware.to_str().expect("utf-8 shopware path"),
+            "--base",
+            "HEAD",
+            "--index",
+            index.to_str().expect("utf-8 index path"),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "admin:component:property:sw-product-detail:product",
+        ))
+        .stdout(predicate::str::contains("change:           removed"))
+        .stdout(predicate::str::contains("affected plugins: 1"))
+        .stdout(predicate::str::contains("swag/product-extension"))
+        .stdout(predicate::str::contains("sw-product-detail.html.twig"));
+}
+
+#[test]
+fn check_reports_removed_admin_component_member_from_imported_shopware_component() {
+    let temp = tempdir().expect("tempdir");
+    let plugins = temp.path().join("plugins");
+    let plugin = plugins.join("SwagProductExtension");
+    let plugin_admin = plugin.join("src/Resources/app/administration/src");
+    let index = temp.path().join("plugins.sqlite");
+    let shopware = temp.path().join("shopware");
+    let shopware_module =
+        shopware.join("src/Administration/Resources/app/administration/src/module/sw-product");
+    let component_dir = shopware_module.join("page/sw-product-detail");
+    let module_index = shopware_module.join("index.js");
+    let component_index = component_dir.join("index.js");
+
+    fs::create_dir_all(&plugin_admin).expect("create plugin admin source");
+    fs::write(
+        plugin.join("composer.json"),
+        r#"{"name":"swag/product-extension"}"#,
+    )
+    .expect("write composer");
+    fs::write(
+        plugin_admin.join("main.js"),
+        r#"
+import template from './sw-product-detail.html.twig';
+
+Shopware.Component.override('sw-product-detail', {
+    template,
+});
+"#,
+    )
+    .expect("write plugin admin source");
+    fs::write(
+        plugin_admin.join("sw-product-detail.html.twig"),
+        r#"
+<template>
+    <button v-if="product" @click="onSave">
+        {{ product.name }}
+    </button>
+</template>
+"#,
+    )
+    .expect("write plugin admin template");
+
+    Command::cargo_bin("sw-impact")
+        .expect("binary exists")
+        .args([
+            "index",
+            "--plugins",
+            plugins.to_str().expect("utf-8 plugins path"),
+            "--out",
+            index.to_str().expect("utf-8 index path"),
+        ])
+        .assert()
+        .success();
+
+    fs::create_dir_all(&component_dir).expect("create shopware component source");
+    fs::write(
+        &module_index,
+        r#"
+Shopware.Component.register('sw-product-detail', () => import('./page/sw-product-detail'));
+"#,
+    )
+    .expect("write shopware component registration");
+    fs::write(
+        &component_index,
+        r#"
+export default {
+    computed: {
+        product() {
+            return {};
+        },
+    },
+    methods: {
+        onSave() {},
+    },
+};
+"#,
+    )
+    .expect("write base shopware component");
+
+    git(&shopware, ["init", "--initial-branch=main"]).expect("git init");
+    git(&shopware, ["add", "."]).expect("git add");
+    git(
+        &shopware,
+        [
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "base",
+        ],
+    )
+    .expect("git commit");
+
+    fs::write(
+        &component_index,
+        r#"
+export default {
+    computed: {},
+    methods: {},
+};
+"#,
+    )
+    .expect("remove component members from current worktree");
+
+    Command::cargo_bin("sw-impact")
+        .expect("binary exists")
+        .args([
+            "check",
+            "--shopware",
+            shopware.to_str().expect("utf-8 shopware path"),
+            "--base",
+            "HEAD",
+            "--index",
+            index.to_str().expect("utf-8 index path"),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "admin:component:property:sw-product-detail:product",
+        ))
+        .stdout(predicate::str::contains(
+            "admin:component:method:sw-product-detail:onSave",
+        ))
+        .stdout(predicate::str::contains("change:           removed"))
+        .stdout(predicate::str::contains("affected plugins: 1"))
+        .stdout(predicate::str::contains("swag/product-extension"))
+        .stdout(predicate::str::contains("sw-product-detail.html.twig"));
+}
+
+#[test]
 fn check_reports_removed_twig_block_impact() {
     let temp = tempdir().expect("tempdir");
     let plugins = temp.path().join("plugins");
