@@ -27,6 +27,7 @@ pub fn build_index(args: IndexArgs, verbose: bool) -> Result<()> {
     let started_at = Instant::now();
     prepare_output_location(&args.out, args.force)?;
 
+    eprintln!("Scanning plugin corpus...");
     let discover_started_at = Instant::now();
     let (candidates, walk_stats) =
         discover_candidates(&args).context("discover plugin candidate files")?;
@@ -87,11 +88,20 @@ pub fn build_index(args: IndexArgs, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn query_index(args: QueryArgs) -> Result<()> {
+pub fn query_index(args: QueryArgs, verbose: bool) -> Result<()> {
     let started_at = Instant::now();
+    let open_started_at = Instant::now();
     let connection = Connection::open_with_flags(&args.index, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .with_context(|| format!("open SQLite index {}", path_display(&args.index)))?;
+    if verbose {
+        tracing::info!(
+            index = %path_display(&args.index),
+            elapsed = %format_duration(open_started_at.elapsed()),
+            "opened SQLite index"
+        );
+    }
 
+    let query_started_at = Instant::now();
     let mut result = query_surface(
         &connection,
         &args.pattern,
@@ -99,10 +109,24 @@ pub fn query_index(args: QueryArgs) -> Result<()> {
         args.only_high_confidence,
         args.max_surfaces,
         args.max_evidence_per_surface,
+        verbose,
     )
     .with_context(|| format!("query surface pattern {}", args.pattern))?;
+    if verbose {
+        tracing::info!(
+            pattern = %args.pattern,
+            matching_surfaces = result.matched_surfaces,
+            surface_blocks_shown = result.surface_blocks_shown(),
+            usages = result.total_usages,
+            evidence_rows_shown = result.evidence_rows_shown(),
+            affected_plugins = result.affected_plugins,
+            elapsed = %format_duration(query_started_at.elapsed()),
+            "queried indexed surface impact"
+        );
+    }
     result.elapsed = Some(started_at.elapsed());
 
+    let print_started_at = Instant::now();
     print_query_result(
         &result,
         ReportOptions {
@@ -110,6 +134,16 @@ pub fn query_index(args: QueryArgs) -> Result<()> {
             max_surfaces: Some(args.max_surfaces),
         },
     );
+    if verbose {
+        tracing::info!(
+            elapsed = %format_duration(print_started_at.elapsed()),
+            "printed query report"
+        );
+        tracing::info!(
+            elapsed = %format_duration(started_at.elapsed()),
+            "finished query command"
+        );
+    }
     Ok(())
 }
 
@@ -727,14 +761,25 @@ fn query_surface(
     only_high_confidence: bool,
     max_surfaces: usize,
     max_evidence_per_surface: usize,
+    verbose: bool,
 ) -> Result<QueryResult> {
     let query = SurfaceQuery::from_input(pattern);
     let min_confidence = if include_low_confidence { 1 } else { 2 };
     let require_high = if only_high_confidence { 1 } else { 0 };
     let surface_filter = query.sql_filter();
     let surface_value = query.sql_value();
-    let indexed_plugins = indexed_plugin_count(connection)?;
 
+    let indexed_plugins_started_at = Instant::now();
+    let indexed_plugins = indexed_plugin_count(connection)?;
+    if verbose {
+        tracing::info!(
+            indexed_plugins,
+            elapsed = %format_duration(indexed_plugins_started_at.elapsed()),
+            "counted indexed plugins"
+        );
+    }
+
+    let count_started_at = Instant::now();
     let count_sql = format!(
         "
         select count(distinct s.id), count(distinct e.plugin_id), count(*)
@@ -751,6 +796,17 @@ fn query_surface(
             params![surface_value, min_confidence, require_high],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
+    if verbose {
+        tracing::info!(
+            matching_surfaces = i64_to_usize(matched_surfaces),
+            affected_plugins = i64_to_usize(affected_plugins),
+            usages = i64_to_usize(total_usages),
+            elapsed = %format_duration(count_started_at.elapsed()),
+            "counted query matches"
+        );
+    }
+
+    let totals_started_at = Instant::now();
     let mut surfaces = query_surface_totals(
         connection,
         surface_filter,
@@ -758,8 +814,18 @@ fn query_surface(
         min_confidence,
         require_high,
     )?;
+    if verbose {
+        tracing::info!(
+            surface_totals = surfaces.len(),
+            elapsed = %format_duration(totals_started_at.elapsed()),
+            "loaded query surface totals"
+        );
+    }
 
+    let evidence_started_at = Instant::now();
+    let mut evidence_rows = 0;
     for surface in surfaces.iter_mut().take(max_surfaces) {
+        let surface_started_at = Instant::now();
         surface.evidence = query_surface_evidence(
             connection,
             &surface.surface,
@@ -767,6 +833,24 @@ fn query_surface(
             require_high,
             max_evidence_per_surface,
         )?;
+        evidence_rows += surface.evidence.len();
+        if verbose {
+            tracing::info!(
+                surface = %surface.surface,
+                evidence_rows = surface.evidence.len(),
+                total_usages = surface.usage_count,
+                elapsed = %format_duration(surface_started_at.elapsed()),
+                "loaded query surface evidence"
+            );
+        }
+    }
+    if verbose {
+        tracing::info!(
+            surface_blocks = max_surfaces.min(surfaces.len()),
+            evidence_rows,
+            elapsed = %format_duration(evidence_started_at.elapsed()),
+            "loaded query evidence"
+        );
     }
 
     Ok(QueryResult {
@@ -1288,6 +1372,7 @@ mod tests {
             false,
             usize::MAX,
             usize::MAX,
+            false,
         )
         .expect("query default confidence");
         assert_eq!(default.affected_plugins, 1);
@@ -1307,6 +1392,7 @@ mod tests {
             false,
             usize::MAX,
             1,
+            false,
         )
         .expect("query with low confidence");
         assert_eq!(include_low.affected_plugins, 2);
@@ -1320,6 +1406,7 @@ mod tests {
             true,
             usize::MAX,
             usize::MAX,
+            false,
         )
         .expect("query only high confidence");
         assert_eq!(only_high.affected_plugins, 1);
@@ -1334,8 +1421,16 @@ mod tests {
         let mut connection = Connection::open(index_path).expect("open database");
         seed_query_fixture(&mut connection);
 
-        let result = query_surface(&connection, "service:id:shopware.*", true, false, 1, 1)
-            .expect("query pattern with limits");
+        let result = query_surface(
+            &connection,
+            "service:id:shopware.*",
+            true,
+            false,
+            1,
+            1,
+            false,
+        )
+        .expect("query pattern with limits");
         assert_eq!(result.matched_surfaces, 2);
         assert_eq!(result.surface_blocks_shown(), 1);
         assert_eq!(result.hidden_surface_blocks(), 1);
@@ -1343,8 +1438,16 @@ mod tests {
         assert_eq!(result.surfaces[0].evidence.len(), 1);
         assert!(result.surfaces[1].evidence.is_empty());
 
-        let result = query_surface(&connection, "service:id:shopware.*", true, false, 2, 1)
-            .expect("query pattern with per-surface evidence limit");
+        let result = query_surface(
+            &connection,
+            "service:id:shopware.*",
+            true,
+            false,
+            2,
+            1,
+            false,
+        )
+        .expect("query pattern with per-surface evidence limit");
         assert_eq!(result.surface_blocks_shown(), 2);
         assert_eq!(result.evidence_rows_shown(), 2);
         assert!(

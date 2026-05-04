@@ -1,9 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal};
-use std::path::Path;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
@@ -22,20 +22,43 @@ const DEFAULT_BASE: &str = "origin/trunk";
 
 pub fn run_check(args: CheckArgs, verbose: bool) -> Result<()> {
     let started_at = Instant::now();
-    let worktree = git::worktree_root(&args.shopware)?;
-    let base = resolve_check_base(&worktree, &args.base)?;
-    let merge_base = base.revision.as_str();
-    let changed_files = git::changed_files(&worktree, merge_base)?;
 
+    let worktree_started_at = Instant::now();
+    let worktree = git::worktree_root(&args.shopware)?;
     if verbose {
         tracing::info!(
             worktree = %worktree.display(),
-            changed_files = changed_files.len(),
-            "collected changed Shopware files"
+            elapsed = %format_duration(worktree_started_at.elapsed()),
+            "resolved Shopware worktree"
         );
     }
 
+    let base_started_at = Instant::now();
+    let base = resolve_check_base(&worktree, &args.base)?;
+    let merge_base = base.revision.as_str();
+    if verbose {
+        tracing::info!(
+            base = %base.label,
+            merge_base = %merge_base,
+            elapsed = %format_duration(base_started_at.elapsed()),
+            "resolved check base"
+        );
+    }
+
+    let changed_files = collect_changed_files(&worktree, merge_base, verbose)?;
+
+    let surface_started_at = Instant::now();
     let changed_surfaces = collect_changed_surfaces(&worktree, merge_base, &changed_files)?;
+    if verbose {
+        tracing::info!(
+            changed_files = changed_files.len(),
+            changed_surfaces = changed_surfaces.len(),
+            elapsed = %format_duration(surface_started_at.elapsed()),
+            "collected changed Shopware surfaces"
+        );
+    }
+
+    let impact_started_at = Instant::now();
     let mut impacts = lookup_impacts(
         &args.index,
         &changed_surfaces,
@@ -44,13 +67,22 @@ pub fn run_check(args: CheckArgs, verbose: bool) -> Result<()> {
         args.max_evidence_per_surface,
     )?;
     sort_impacts(&mut impacts);
-    let indexed_plugins = indexed_plugin_count(&args.index)?;
-
     if verbose {
         tracing::info!(
             changed_surfaces = changed_surfaces.len(),
             impacted_surfaces = impacts.len(),
-            "finished impact lookup"
+            elapsed = %format_duration(impact_started_at.elapsed()),
+            "looked up indexed plugin impacts"
+        );
+    }
+
+    let indexed_plugins_started_at = Instant::now();
+    let indexed_plugins = indexed_plugin_count(&args.index)?;
+    if verbose {
+        tracing::info!(
+            indexed_plugins,
+            elapsed = %format_duration(indexed_plugins_started_at.elapsed()),
+            "counted indexed plugins"
         );
     }
 
@@ -63,16 +95,29 @@ pub fn run_check(args: CheckArgs, verbose: bool) -> Result<()> {
         impacts,
     };
 
-    print!(
-        "{}",
-        format_human_report_with_options(
-            &report,
-            ReportOptions {
-                terminal_links: stdout_supports_links(),
-                max_surfaces: Some(args.max_surfaces),
-            },
-        )
+    let format_started_at = Instant::now();
+    let output = format_human_report_with_options(
+        &report,
+        ReportOptions {
+            terminal_links: stdout_supports_links(),
+            max_surfaces: Some(args.max_surfaces),
+        },
     );
+    if verbose {
+        tracing::info!(
+            bytes = output.len(),
+            elapsed = %format_duration(format_started_at.elapsed()),
+            "formatted check report"
+        );
+    }
+
+    print!("{output}");
+    if verbose {
+        tracing::info!(
+            elapsed = %format_duration(started_at.elapsed()),
+            "finished check command"
+        );
+    }
     Ok(())
 }
 
@@ -86,6 +131,19 @@ fn stdout_supports_links() -> bool {
     }
 
     env::var("TERM").map_or(true, |term| term != "dumb")
+}
+
+fn format_duration(duration: Duration) -> String {
+    let total_millis = duration.as_millis();
+    let minutes = total_millis / 60_000;
+    let seconds = (total_millis % 60_000) / 1_000;
+    let millis = total_millis % 1_000;
+
+    if minutes > 0 {
+        format!("{minutes}m {seconds}.{millis:03}s")
+    } else {
+        format!("{seconds}.{millis:03}s")
+    }
 }
 
 struct CheckBase {
@@ -112,6 +170,68 @@ fn resolve_check_base(worktree: &Path, base: &str) -> Result<CheckBase> {
         }
         Err(error) => Err(error),
     }
+}
+
+fn collect_changed_files(worktree: &Path, merge_base: &str, verbose: bool) -> Result<Vec<PathBuf>> {
+    let started_at = Instant::now();
+    let mut files = BTreeSet::new();
+
+    let committed = timed_git_file_list(verbose, "git committed diff", || {
+        git::changed_committed_files(worktree, merge_base)
+    })?;
+    let committed_count = committed.len();
+    files.extend(committed);
+
+    let staged = timed_git_file_list(verbose, "git staged tracked diff", || {
+        git::staged_tracked_files(worktree)
+    })?;
+    let staged_count = staged.len();
+    files.extend(staged);
+
+    let unstaged = timed_git_file_list(verbose, "git unstaged tracked diff", || {
+        git::unstaged_tracked_files(worktree)
+    })?;
+    let unstaged_count = unstaged.len();
+    files.extend(unstaged);
+
+    let untracked = timed_git_file_list(verbose, "git untracked files", || {
+        git::untracked_files(worktree)
+    })?;
+    let untracked_count = untracked.len();
+    files.extend(untracked);
+
+    let files = files.into_iter().collect::<Vec<_>>();
+    if verbose {
+        tracing::info!(
+            committed_files = committed_count,
+            staged_files = staged_count,
+            unstaged_files = unstaged_count,
+            untracked_files = untracked_count,
+            changed_files = files.len(),
+            elapsed = %format_duration(started_at.elapsed()),
+            "collected changed Shopware files"
+        );
+    }
+
+    Ok(files)
+}
+
+fn timed_git_file_list(
+    verbose: bool,
+    phase: &'static str,
+    collect: impl FnOnce() -> Result<Vec<PathBuf>>,
+) -> Result<Vec<PathBuf>> {
+    let started_at = Instant::now();
+    let files = collect()?;
+    if verbose {
+        tracing::info!(
+            phase = %phase,
+            files = files.len(),
+            elapsed = %format_duration(started_at.elapsed()),
+            "finished Git changed-file phase"
+        );
+    }
+    Ok(files)
 }
 
 fn collect_changed_surfaces(

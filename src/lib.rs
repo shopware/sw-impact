@@ -23,6 +23,6 @@ pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Index(args) => storage::build_index(args, cli.verbose),
         Commands::Check(args) => check::run_check(args, cli.verbose),
-        Commands::Query(args) => storage::query_index(args),
+        Commands::Query(args) => storage::query_index(args, cli.verbose),
     }
 }
