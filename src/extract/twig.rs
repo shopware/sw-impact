@@ -26,6 +26,11 @@ pub fn extract(
     }
 
     extract_blocks(content, relative_path, role, include_snippets, &mut facts);
+
+    if role == FactRole::Definition {
+        return facts.into_vec();
+    }
+
     extract_template_references(content, relative_path, role, include_snippets, &mut facts);
     extract_route_references(content, relative_path, role, include_snippets, &mut facts);
     extract_snippet_references(content, relative_path, role, include_snippets, &mut facts);
@@ -387,7 +392,13 @@ mod tests {
 
     #[test]
     fn extracts_twig_definitions_for_template_and_blocks() {
-        let content = "{% block base_header %}{% endblock %}";
+        let content = r#"
+{% sw_extends '@Storefront/storefront/base.html.twig' %}
+{% block base_header %}
+    {{ path('frontend.detail.page') }}
+    {{ 'sw-order.general.mainMenuItemGeneral'|trans }}
+{% endblock %}
+"#;
         let facts = extract(
             content,
             Path::new("src/Storefront/Resources/views/storefront/base.html.twig"),
@@ -400,6 +411,10 @@ mod tests {
             surfaces.contains(&"twig:template:@Storefront/storefront/base.html.twig".to_string())
         );
         assert!(surfaces.contains(&"twig:block:base_header".to_string()));
+        assert!(!surfaces.contains(&"route:name:frontend.detail.page".to_string()));
+        assert!(
+            !surfaces.contains(&"snippet:key:sw-order.general.mainMenuItemGeneral".to_string())
+        );
         assert!(facts.iter().all(|fact| fact.role == FactRole::Definition));
         assert!(facts.iter().all(|fact| fact.evidence.snippet.is_none()));
         assert_eq!(

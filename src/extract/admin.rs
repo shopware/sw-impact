@@ -15,15 +15,41 @@ pub fn extract(
 
     extract_component_calls(content, relative_path, role, include_snippets, &mut facts);
     extract_module_registers(content, relative_path, role, include_snippets, &mut facts);
+
+    if role == FactRole::Definition {
+        return facts.into_vec();
+    }
+
     extract_repository_factory(content, relative_path, role, include_snippets, &mut facts);
     extract_shopware_services(content, relative_path, role, include_snippets, &mut facts);
     extract_shopware_state(content, relative_path, role, include_snippets, &mut facts);
     extract_route_literals(content, relative_path, role, include_snippets, &mut facts);
     extract_entity_literals(content, relative_path, role, include_snippets, &mut facts);
     extract_component_literals(content, relative_path, role, include_snippets, &mut facts);
+    extract_embedded_twig_blocks(content, &mut facts);
     extract_snippet_calls(content, relative_path, role, include_snippets, &mut facts);
 
     facts.into_vec()
+}
+
+fn extract_embedded_twig_blocks(content: &str, facts: &mut FactCollector) {
+    if !content.contains("{%") || !content.contains("block") {
+        return;
+    }
+
+    for captures in embedded_twig_block_re().captures_iter(content) {
+        let Some(block_match) = captures.get(1) else {
+            continue;
+        };
+
+        facts.push(
+            FactRole::Usage,
+            format!("twig:block:{}", block_match.as_str()),
+            facts.evidence(block_match.start()),
+            Confidence::High,
+            "twig.block.usage",
+        );
+    }
 }
 
 fn extract_component_calls(
@@ -46,15 +72,19 @@ fn extract_component_calls(
             continue;
         };
 
-        facts.push(
-            role,
-            format!("admin:component:{}", component.value),
-            facts.evidence(component.start),
-            Confidence::High,
-            format!("shopware.component.{}", method_match.as_str()),
-        );
+        let method = method_match.as_str();
+        if role == FactRole::Usage || method == "register" {
+            facts.push(
+                role,
+                format!("admin:component:{}", component.value),
+                facts.evidence(component.start),
+                Confidence::High,
+                format!("shopware.component.{method}"),
+            );
+        }
 
-        if method_match.as_str() == "extend"
+        if role == FactRole::Usage
+            && method == "extend"
             && let Some(parent) = literals.get(1)
         {
             facts.push(
@@ -458,6 +488,11 @@ fn component_attribute_re() -> &'static Regex {
 fn vue_component_tag_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"</?\s*(sw-[a-z0-9][a-z0-9-]*)\b").unwrap())
+}
+
+fn embedded_twig_block_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\{%-?\s*block\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap())
 }
 
 fn snippet_call_re() -> &'static Regex {
@@ -947,6 +982,9 @@ Shopware.State.get('swProductDetail');
 this.$router.push({ name: 'sw.product.detail' });
 this.$t('sw-order.general.mainMenuItemGeneral');
 this.$te('sw-order.general.mainMenuItemList');
+const template = `{% block sw_product_detail_content_tabs_reviews %}
+    {% parent %}
+{% endblock %}`;
 "#;
 
         let facts = extract(
@@ -970,6 +1008,9 @@ this.$te('sw-order.general.mainMenuItemList');
         assert!(surfaces.contains(&"admin:state-store:swProductDetail".to_string()));
         assert!(surfaces.contains(&"snippet:key:sw-order.general.mainMenuItemGeneral".to_string()));
         assert!(surfaces.contains(&"snippet:key:sw-order.general.mainMenuItemList".to_string()));
+        assert!(
+            surfaces.contains(&"twig:block:sw_product_detail_content_tabs_reviews".to_string())
+        );
         assert!(facts.iter().any(|fact| fact.evidence.snippet.is_some()));
         assert_eq!(
             facts
@@ -997,12 +1038,7 @@ export default {
 </script>
 "#;
 
-        let facts = extract(
-            content,
-            Path::new("component.vue"),
-            FactRole::Definition,
-            false,
-        );
+        let facts = extract(content, Path::new("component.vue"), FactRole::Usage, false);
         let surfaces = surfaces(&facts);
 
         assert!(surfaces.contains(&"admin:component:sw-product-detail".to_string()));
@@ -1012,7 +1048,47 @@ export default {
         assert!(surfaces.contains(&"dal:entity:category".to_string()));
         assert!(surfaces.contains(&"admin:state-store:swCategoryDetail".to_string()));
         assert!(surfaces.contains(&"snippet:key:sw-order.list.textOrdersTotal".to_string()));
-        assert!(facts.iter().all(|fact| fact.role == FactRole::Definition));
+        assert!(facts.iter().all(|fact| fact.role == FactRole::Usage));
         assert!(facts.iter().all(|fact| fact.evidence.snippet.is_none()));
+    }
+
+    #[test]
+    fn definition_extraction_only_emits_admin_extension_points() {
+        let content = r#"
+Shopware.Component.override('sw-product-detail', {});
+Shopware.Component.extend('sw-product-card', 'sw-product-list', {});
+Shopware.Component.register('sw-product-detail', {});
+Shopware.Module.register('sw-product', {
+    routes: {
+        detail: { component: 'sw-product-detail', meta: { parentPath: 'sw.product.index' } }
+    }
+});
+const repo = repositoryFactory.create('product');
+Shopware.Service('acl');
+Shopware.State.get('swProductDetail');
+this.$router.push({ name: 'sw.product.detail' });
+this.$t('sw-order.general.mainMenuItemGeneral');
+"#;
+
+        let facts = extract(
+            content,
+            Path::new("administration/src/main.js"),
+            FactRole::Definition,
+            false,
+        );
+        let surfaces = surfaces(&facts);
+
+        assert!(surfaces.contains(&"admin:component:sw-product-detail".to_string()));
+        assert!(surfaces.contains(&"admin:route:sw.product".to_string()));
+        assert!(surfaces.contains(&"admin:route:sw.product.detail".to_string()));
+        assert!(!surfaces.contains(&"admin:component:sw-product-card".to_string()));
+        assert!(!surfaces.contains(&"admin:component:sw-product-list".to_string()));
+        assert!(!surfaces.contains(&"dal:entity:product".to_string()));
+        assert!(!surfaces.contains(&"service:id:acl".to_string()));
+        assert!(!surfaces.contains(&"admin:state-store:swProductDetail".to_string()));
+        assert!(
+            !surfaces.contains(&"snippet:key:sw-order.general.mainMenuItemGeneral".to_string())
+        );
+        assert!(facts.iter().all(|fact| fact.role == FactRole::Definition));
     }
 }

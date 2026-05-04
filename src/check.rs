@@ -115,6 +115,7 @@ fn is_check_definition_language(language: Language) -> bool {
     matches!(
         language,
         Language::Php
+            | Language::Twig
             | Language::Json
             | Language::Yaml
             | Language::Toml

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use aho_corasick::AhoCorasick;
 use anyhow::{Context, Result, anyhow};
@@ -25,6 +25,8 @@ const PREFILTER_ANCHORS: &[&str] = &[
     "Shopware.",
     "Shopware",
     "sw_extends",
+    "{% block",
+    "{%- block",
     "@Storefront",
     "@Administration",
     "@Framework",
@@ -257,6 +259,10 @@ fn collect_plugin_candidates(
             .unwrap_or_else(|_| entry.path())
             .to_path_buf();
 
+        if is_public_resource_path(&relative_path) {
+            continue;
+        }
+
         if !is_known_manifest(&relative_path)
             && !matches_prefilter(entry.path(), &relative_path, prefilter)?
         {
@@ -301,7 +307,7 @@ fn is_excluded_entry(entry: &DirEntry, root: &Path, excludes: &HashSet<String>) 
         .path()
         .strip_prefix(root)
         .ok()
-        .is_some_and(|path| has_excluded_component(path, excludes))
+        .is_some_and(|path| has_excluded_component(path, excludes) || is_public_resource_path(path))
 }
 
 fn has_excluded_component(path: &Path, excludes: &HashSet<String>) -> bool {
@@ -311,6 +317,25 @@ fn has_excluded_component(path: &Path, excludes: &HashSet<String>) -> bool {
             .to_str()
             .is_some_and(|component| excludes.contains(component))
     })
+}
+
+fn is_public_resource_path(path: &Path) -> bool {
+    let mut previous = [None, None];
+
+    for component in path.components() {
+        let Component::Normal(component) = component else {
+            continue;
+        };
+        let component = component.to_str();
+
+        if previous == [Some("src"), Some("Resources")] && component == Some("public") {
+            return true;
+        }
+
+        previous = [previous[1], component];
+    }
+
+    false
 }
 
 fn excluded_components(values: &[String]) -> HashSet<String> {
@@ -468,6 +493,16 @@ mod tests {
             plugin.join("src/Foo.php"),
             "<?php\nShopware\\Core\\Kernel::class;\n",
         )?;
+        fs::create_dir_all(plugin.join("src/Resources/views/administration"))?;
+        fs::write(
+            plugin.join("src/Resources/views/administration/detail.html.twig"),
+            "{% block sw_product_detail_content_tabs_reviews %}{% endblock %}",
+        )?;
+        fs::create_dir_all(plugin.join("src/Resources/public/administration/assets"))?;
+        fs::write(
+            plugin.join("src/Resources/public/administration/assets/admin.js"),
+            "Shopware.Component.override('sw-product-detail', {});",
+        )?;
         fs::write(
             plugin.join("src/NoAnchor.php"),
             "<?php\nclass NoAnchor {}\n",
@@ -478,10 +513,16 @@ mod tests {
         let paths = candidate_paths(&candidates);
 
         assert_eq!(stats.plugins, 1);
-        assert_eq!(stats.candidates, 3);
+        assert_eq!(stats.candidates, 4);
         assert!(paths.contains(&PathBuf::from("composer.json")));
         assert!(paths.contains(&PathBuf::from("manifest.xml")));
         assert!(paths.contains(&PathBuf::from("src/Foo.php")));
+        assert!(paths.contains(&PathBuf::from(
+            "src/Resources/views/administration/detail.html.twig"
+        )));
+        assert!(!paths.contains(&PathBuf::from(
+            "src/Resources/public/administration/assets/admin.js"
+        )));
         assert!(!paths.contains(&PathBuf::from("src/NoAnchor.php")));
         assert_eq!(candidates[0].plugin.name, "acme/plugin");
         assert_eq!(candidates[0].plugin.version.as_deref(), Some("1.2.3"));
