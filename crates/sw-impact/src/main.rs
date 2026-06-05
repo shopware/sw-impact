@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use sw_impact_scanner::scan_dir;
+use sw_impact_scanner::{scan_dir, validate_queries};
+use tracing::Level;
+use tracing_subscriber::FmtSubscriber;
 
 // Use MiMalloc, which is much more perfomant for small allocations
 // on many platforms,
@@ -32,8 +34,21 @@ pub struct ScanArgs {
 
 fn main() {
     let cli = Cli::parse();
+    validate_queries();
+
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(Level::DEBUG)
+        .with_ansi(true)
+        .with_level(true)
+        .with_thread_ids(true)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("setting default tracing subscriber failed");
 
     match cli.command {
-        Commands::Scan(args) => scan_dir(&args.path).unwrap(),
+        Commands::Scan(args) => {
+            let _surfaces = scan_dir(&args.path).unwrap();
+            // TODO: persist surfaces?
+        }
     }
 }

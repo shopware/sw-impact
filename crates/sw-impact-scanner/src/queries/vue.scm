@@ -1,25 +1,25 @@
 ; top level file queries
-(program 
-  (comment) @vue.toplevel.comment
-)
-
-; export default {...}
-(program
-  (export_statement
-    value: (object)
-  ) @vue.component
-)
-
-; export default Component.wrapComponentConfig({
-(program 
-  (export_statement
-    value: (call_expression
-      arguments: (arguments
-        (object) @vue.component
-      )
-    )
-  )
-)
+;(program 
+;  (comment) @vue.toplevel.comment
+;)
+;
+;; export default {...}
+;(program
+;  (export_statement
+;    value: (object)
+;  ) @vue.component
+;)
+;
+;; export default Component.wrapComponentConfig({
+;(program 
+;  (export_statement
+;    value: (call_expression
+;      arguments: (arguments
+;        (object) @vue.component
+;      )
+;    )
+;  )
+;)
 
 ; Likely run the ones below explicitly on vue option api object
 
@@ -27,43 +27,49 @@
 ; emits: ['close', 'confirm']
 (object
   (pair
-    key: (property_identifier) @_vue.emits.key
+    key: (property_identifier) @_emits.key
     value: (array
              (_
-               (string_fragment) @vue.emit.name
+               (string_fragment) @emit.name
              )
            )
-    (#eq? @_vue.emits.key "emits")
+    (#eq? @_emits.key "emits")
+  )
+)
+
+; Props
+(object
+  (pair
+    key: (property_identifier) @_vue.props
+    value: (object 
+             (pair
+               key: (_) @vue.prop.name
+               value: (_) @vue.prop.definition
+                )
+           )
+    (#eq? @_vue.props "props")
   )
 )
 
 ; Computed
 (object
   (pair
-    key: (property_identifier) @_vue.computed.key
+    key: (property_identifier) @_computed.key
     value: (object 
-             (method_definition
-                name: (_) @vue.computed.name
-                parameters: (_) @vue.computed.parameters
-              )
+               (method_definition) @computed
            )
-    (#eq? @_vue.computed.key "computed")
+    (#eq? @_computed.key "computed")
   )
 )
 
 ; Methods
 (object
   (pair
-    key: (property_identifier) @_vue.method.key
+    key: (property_identifier) @_method.key
     value: (object 
-             (method_definition
-                name: (_) @vue.method.name
-                parameters: (_) @vue.method.parameters
-              )
+                   (method_definition) @method
            )
-    (#eq? @_vue.computed.key "methods")
+    (#eq? @_method.key "methods")
   )
 )
-
-; TODO: props
 

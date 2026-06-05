@@ -6,34 +6,46 @@ use std::{
 use ignore::{DirEntry, WalkBuilder, WalkState};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use thiserror::Error;
+use tracing::info;
 
-use crate::vue::process_file_vue;
+use crate::{
+    api::{SurfaceCollector, SurfaceMap},
+    vue::{process_file_vue, validate_queries as validate_vue_queries},
+};
 
 #[derive(Debug, Error)]
 pub enum ScanError {}
 
+pub mod api;
 pub mod vue;
 
-pub fn scan_dir(path: &Path) -> Result<(), ScanError> {
-    println!("hello from scanner for {}", path.display());
+pub fn validate_queries() {
+    validate_vue_queries();
+}
+
+pub fn scan_dir(path: &Path) -> Result<SurfaceMap, ScanError> {
+    validate_queries();
+    let collector = SurfaceCollector::new();
 
     let files = collect_files(path);
 
     files.par_iter().for_each(|path| {
-        process_file(path);
+        process_file(path, &collector);
     });
 
-    Ok(())
+    let surface_map = collector.finish();
+
+    info!("surfaces found: {}", surface_map.len());
+
+    Ok(surface_map)
 }
 
-fn process_file(path: &Path) {
-    println!("{}", path.display());
-
+fn process_file(path: &Path, collector: &SurfaceCollector) {
     let file_ext = path.extension().and_then(|e| e.to_str());
     match file_ext {
         Some("js") | Some("ts") => {
             if is_administration_path(path) {
-                process_file_vue(path)
+                process_file_vue(path, collector)
             } else {
                 // TODO: storefront
             }
@@ -69,7 +81,7 @@ fn collect_files(path: &Path) -> Vec<PathBuf> {
         })
     });
 
-    return files.into_inner().unwrap();
+    files.into_inner().unwrap()
 }
 
 /// returns true for all files and directories it should visit
@@ -93,10 +105,7 @@ fn file_entry_filter(entry: &DirEntry) -> bool {
         return false;
     }
 
-    return match file_ext {
-        "php" | "js" | "ts" | "twig" => true,
-        _ => false,
-    };
+    matches!(file_ext, "php" | "js" | "ts" | "twig")
 }
 
 fn is_administration_path(path: &Path) -> bool {
@@ -119,7 +128,7 @@ fn is_administration_path(path: &Path) -> bool {
         return false;
     }
 
-    return true;
+    true
 }
 
 #[cfg(test)]
