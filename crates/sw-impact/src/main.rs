@@ -2,8 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 use sw_impact_scanner::{scan_dir, validate_queries};
-use tracing::Level;
-use tracing_subscriber::FmtSubscriber;
+use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 // Use MiMalloc, which is much more perfomant for small allocations
 // on many platforms,
@@ -36,8 +35,9 @@ fn main() {
     let cli = Cli::parse();
     validate_queries();
 
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("error"));
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
+        .with_env_filter(filter)
         .with_ansi(true)
         .with_level(true)
         .with_thread_ids(true)

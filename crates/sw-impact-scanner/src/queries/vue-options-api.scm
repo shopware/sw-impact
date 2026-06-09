@@ -1,36 +1,12 @@
-; top level file queries
-;(program 
-;  (comment) @vue.toplevel.comment
-;)
-;
-;; export default {...}
-;(program
-;  (export_statement
-;    value: (object)
-;  ) @vue.component
-;)
-;
-;; export default Component.wrapComponentConfig({
-;(program 
-;  (export_statement
-;    value: (call_expression
-;      arguments: (arguments
-;        (object) @vue.component
-;      )
-;    )
-;  )
-;)
-
 ; Likely run the ones below explicitly on vue option api object
 
-; Vue emit
-; emits: ['close', 'confirm']
+; Emits
 (object
   (pair
     key: (property_identifier) @_emits.key
     value: (array
              (_
-               (string_fragment) @emit.name
+               (string_fragment) @emit
              )
            )
     (#eq? @_emits.key "emits")
@@ -42,10 +18,7 @@
   (pair
     key: (property_identifier) @_vue.props
     value: (object 
-             (pair
-               key: (_) @vue.prop.name
-               value: (_) @vue.prop.definition
-                )
+             (pair) @prop
            )
     (#eq? @_vue.props "props")
   )

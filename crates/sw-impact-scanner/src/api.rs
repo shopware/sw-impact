@@ -33,12 +33,18 @@ impl Surface {
 pub enum Signature {
     None,
     VueMethod(VueMethod),
+    VueProp(VueProp),
 }
 
 #[derive(Debug)]
 pub struct VueMethod {
     pub parameters: String, // TODO: proper parameter parsing
     pub return_type: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct VueProp {
+    pub definition: String, // TODO: proper parsing
 }
 
 #[derive(Debug)]
