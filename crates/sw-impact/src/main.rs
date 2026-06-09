@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use sw_impact_scanner::{scan_dir, validate_queries};
+use sw_impact_scanner::{
+    api::{load_surface_map, save_surface_map},
+    scan_dir, validate_queries,
+};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 // Use MiMalloc, which is much more perfomant for small allocations
@@ -47,8 +50,11 @@ fn main() {
 
     match cli.command {
         Commands::Scan(args) => {
-            let _surfaces = scan_dir(&args.path).unwrap();
-            // TODO: persist surfaces?
+            let surfaces = scan_dir(&args.path).unwrap();
+            // TODO: clean up persist surfaces
+            save_surface_map(&surfaces, "./index.json").unwrap();
+            let loaded = load_surface_map("./index.json").unwrap();
+            println!("detected {} api surfaces", loaded.len());
         }
     }
 }

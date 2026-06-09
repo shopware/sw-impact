@@ -1,10 +1,18 @@
-use std::{collections::HashMap, path::PathBuf, sync::Mutex};
+use std::{
+    collections::HashMap,
+    error::Error,
+    fs::File,
+    io::{BufReader, BufWriter},
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
-use tracing::error;
+use serde::{Deserialize, Serialize};
+use tracing::{error, trace};
 
 pub type SurfaceMap = HashMap<String, Surface>;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Surface {
     pub file_path: PathBuf,
     pub fqn: String,
@@ -29,20 +37,20 @@ impl Surface {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum Signature {
     None,
     VueMethod(VueMethod),
     VueProp(VueProp),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct VueMethod {
     pub parameters: String, // TODO: proper parameter parsing
     pub return_type: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct VueProp {
     pub definition: String, // TODO: proper parsing
 }
@@ -60,6 +68,7 @@ impl SurfaceCollector {
     }
 
     pub fn push(&self, surface: Surface) {
+        trace!("adding fqn: {}", surface.fqn);
         let updated = self
             .map
             .lock()
@@ -79,4 +88,22 @@ impl Default for SurfaceCollector {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// TODO: add proper error type
+pub fn save_surface_map(
+    surface_map: &SurfaceMap,
+    path: impl AsRef<Path>,
+) -> Result<(), Box<dyn Error>> {
+    let file = File::create(path)?;
+    let writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(writer, surface_map)?;
+    Ok(())
+}
+
+// TODO: add proper error type
+pub fn load_surface_map(path: impl AsRef<Path>) -> Result<SurfaceMap, Box<dyn Error>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    Ok(serde_json::from_reader(reader)?)
 }
