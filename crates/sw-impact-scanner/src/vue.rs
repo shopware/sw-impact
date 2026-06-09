@@ -1,6 +1,6 @@
 use std::{path::Path, sync::LazyLock};
 
-use tracing::info;
+use tracing::{error, info, warn};
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator};
 
 use crate::api::{Surface, SurfaceCollector, VueMethod, VueProp};
@@ -42,14 +42,12 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
     let mut parser = Parser::new();
     parser.set_language(lang).unwrap();
 
-    let component_name = extract_component_name(path).unwrap();
-    info!("parsing {}", &component_name);
     let file_content = std::fs::read_to_string(path).unwrap();
 
     let tree = parser.parse(file_content.as_bytes(), None).unwrap();
     let root = tree.root_node();
 
-    let vue_file = scan_file_top_level(root, file_content.as_bytes());
+    let vue_file = scan_file_top_level(root, file_content.as_bytes(), path);
     let Some(obj) = vue_file.options_obj else {
         info!("skipping (no vue component): {}", path.display());
         return;
@@ -58,10 +56,19 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
         info!("skipping (is private): {}", path.display());
         return;
     }
+    let Some(component_name) = vue_file.component_name else {
+        warn!(
+            "skipping (failed component name extraction): {}",
+            path.display()
+        );
+        return;
+    };
 
+    info!("parsing {} from ({})", &component_name, path.display());
     let mut cursor = QueryCursor::new();
     let matches = cursor.matches(&QUERY_OBJ, obj, file_content.as_bytes());
     let capture_names = QUERY_OBJ.capture_names();
+    let mut surface_count = 0;
     matches.for_each(|m| {
         for c in m.captures {
             let capture_name = &capture_names[c.index as usize];
@@ -91,6 +98,7 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
                             .map(|n| n.utf8_text(file_content.as_bytes()).unwrap().to_owned()),
                     }),
                 ));
+                surface_count += 1;
 
                 continue;
             }
@@ -111,6 +119,7 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
                         definition: value.utf8_text(file_content.as_bytes()).unwrap().to_owned(),
                     }),
                 ));
+                surface_count += 1;
 
                 continue;
             }
@@ -124,30 +133,43 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
                     c.node.utf8_text(file_content.as_bytes()).unwrap()
                 ),
             ));
+            surface_count += 1;
         }
     });
+
+    if surface_count > 0 && !component_name.starts_with("sw-") {
+        error!(
+            "found surfaces in file {} with detected component name {} that doesn't start with 'sw-'",
+            path.display(),
+            component_name
+        );
+    }
 }
 
 struct VueFile<'a> {
     is_private: bool,
+    component_name: Option<String>,
     options_obj: Option<Node<'a>>,
 }
 
 /// Returns the TS / JS object defining the vue component with options api
 /// If it exists or nothing if the component is declared as @private in a comment
-fn scan_file_top_level<'a>(root: Node<'a>, source: &[u8]) -> VueFile<'a> {
+fn scan_file_top_level<'a>(root: Node<'a>, source: &[u8], path: &Path) -> VueFile<'a> {
     let mut cursor = QueryCursor::new();
     let matches = cursor.matches(&QUERY_FILE, root, source);
     let capture_names = QUERY_FILE.capture_names();
 
-    let mut options_obj = None;
-    let mut is_private = false;
+    let mut vue_file = VueFile {
+        is_private: false,
+        component_name: None,
+        options_obj: None,
+    };
     matches.for_each(|m| {
         for c in m.captures {
             let capture_name = &capture_names[c.index as usize];
 
             if *capture_name == "component" {
-                options_obj = Some(c.node);
+                vue_file.options_obj = Some(c.node);
                 continue;
             }
 
@@ -155,19 +177,77 @@ fn scan_file_top_level<'a>(root: Node<'a>, source: &[u8]) -> VueFile<'a> {
                 let text = c.node.utf8_text(source).unwrap();
 
                 if text.contains("@private") {
-                    is_private = true;
+                    vue_file.is_private = true;
                 }
+                continue;
+            }
+
+            if *capture_name == "import" {
+                let text = c.node.utf8_text(source).unwrap();
+                if let Some(component_name) = extract_component_name_from_template(text) {
+                    vue_file.component_name = Some(component_name);
+                }
+
+                continue;
             }
         }
     });
 
-    VueFile {
-        is_private,
-        options_obj,
+    if vue_file.component_name.is_none() {
+        // component name extraction from template import failed,
+        // fallback to path based extraction as last resort
+        vue_file.component_name = extract_component_name_from_path(path);
     }
+
+    vue_file
 }
 
-fn extract_component_name(path: &Path) -> Option<String> {
-    // TODO: make this more reliable
+fn extract_component_name_from_template(s: &str) -> Option<String> {
+    if s.ends_with(".html.twig") {
+        let (_, filename) = s.split_once("/")?;
+        if filename.contains('/') {
+            // path is more complicated than just ./my-component.html.twig
+            return None;
+        }
+
+        let (component_name, _) = filename.split_once(".")?;
+
+        return Some(component_name.to_owned());
+    }
+
+    None
+}
+
+fn extract_component_name_from_path(path: &Path) -> Option<String> {
     Some(path.parent()?.file_name()?.to_str()?.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_extract_component_name_from_template() {
+        assert_eq!(
+            Some("sw-users-permissions-user-listing".to_owned()),
+            extract_component_name_from_template("./sw-users-permissions-user-listing.html.twig")
+        );
+        assert_eq!(
+            None,
+            extract_component_name_from_template(
+                "./../sw-condition-generic/sw-condition-generic.html.twig"
+            )
+        );
+    }
+
+    #[test]
+    fn test_extract_component_name_from_path() {
+        assert_eq!(
+            Some("sw-users-permissions-user-listing".to_owned()),
+            extract_component_name_from_path(&PathBuf::from(
+                "components/sw-users-permissions-user-listing/index.js"
+            ))
+        );
+    }
 }

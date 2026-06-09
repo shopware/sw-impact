@@ -3,6 +3,16 @@
   (comment) @toplevel.comment
 )
 
+; import template from './sw-cms-el-form-contact.html.twig';
+; matches all import string_fragments
+(program
+  (import_statement
+    source: (string
+              (string_fragment) @import
+    )
+  )
+)
+
 ; export default {...}
 (program
   (export_statement
@@ -14,9 +24,11 @@
 (program 
   (export_statement
     value: (call_expression
-      arguments: (arguments
-        (object) @component
-      )
+             function: (_) @_fn
+             arguments: (arguments
+               (object) @component
+             )
+             (#match? @_fn "wrapComponentConfig")
     )
   )
 )

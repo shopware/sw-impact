@@ -92,7 +92,7 @@ fn file_entry_filter(entry: &DirEntry) -> bool {
     {
         return match file_name.as_ref() {
             // don't traverse in any folder with these names
-            "tests" => false,
+            "tests" | "test" => false,
             _ => true,
         };
     }
