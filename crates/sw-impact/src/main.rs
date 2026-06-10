@@ -2,10 +2,14 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 use sw_impact_scanner::{
-    api::{load_surface_map, save_surface_map},
+    api::{diff_surface_maps, load_surface_map, save_surface_map},
     scan_dir, validate_queries,
 };
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
+
+use crate::output::OutputFormat;
+
+mod output;
 
 // Use MiMalloc, which is much more perfomant for small allocations
 // on many platforms,
@@ -25,36 +29,65 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Scan shopware codebase for public API
-    Scan(ScanArgs),
+    /// Index shopware codebase for public API
+    Index(IndexArgs),
+    /// Check shopware codebase against index for breaking changes
+    Check(CheckArgs),
 }
 
 #[derive(Debug, Args, Clone)]
-pub struct ScanArgs {
+pub struct IndexArgs {
+    /// Path to shopware codebase root folder
     pub path: PathBuf,
+    #[arg(short, long, default_value = "./index.json")]
+    pub index: PathBuf,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct CheckArgs {
+    /// Path to shopware codebase root folder
+    pub path: PathBuf,
+    #[arg(short, long, default_value = "./index.json")]
+    pub index: PathBuf,
+    /// Which output format you want to have
+    #[arg(short, long, default_value_t = OutputFormat::Human)]
+    pub format: OutputFormat,
 }
 
 fn main() {
+    setup_tracing_subscriber();
+
     let cli = Cli::parse();
     validate_queries();
 
+    match cli.command {
+        Commands::Index(args) => {
+            let surface_index = scan_dir(&args.path).unwrap();
+            save_surface_map(&surface_index, &args.index).unwrap();
+            eprintln!("saved index with {} api surfaces", surface_index.len());
+        }
+        Commands::Check(args) => {
+            let surface_index = load_surface_map(&args.index).unwrap();
+            eprintln!("loaded index with {} api surfaces", surface_index.len());
+            let new_surface = scan_dir(&args.path).unwrap();
+
+            let diff = diff_surface_maps(&surface_index, &new_surface);
+            eprintln!("diff:\n{:#?}", diff);
+        }
+    }
+}
+
+/// setup tracing logging, goes to stderr to keep the normal stdout output clean
+/// only outputs warn or errors by default, but can be changed via RUST_LOG=trace env variable
+fn setup_tracing_subscriber() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
     let subscriber = FmtSubscriber::builder()
         .with_env_filter(filter)
         .with_ansi(true)
         .with_level(true)
         .with_thread_ids(true)
+        .with_writer(std::io::stderr)
         .finish();
     tracing::subscriber::set_global_default(subscriber)
         .expect("setting default tracing subscriber failed");
-
-    match cli.command {
-        Commands::Scan(args) => {
-            let surfaces = scan_dir(&args.path).unwrap();
-            // TODO: clean up persist surfaces
-            save_surface_map(&surfaces, "./index.json").unwrap();
-            let loaded = load_surface_map("./index.json").unwrap();
-            println!("detected {} api surfaces", loaded.len());
-        }
-    }
 }

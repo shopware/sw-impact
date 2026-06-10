@@ -81,23 +81,27 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
                 let params = c.node.child_by_field_id(field_id_parameters).unwrap();
                 let return_type = c.node.child_by_field_id(field_id_return_type);
 
-                collector.push(Surface::with_signature(
-                    path.to_owned(),
-                    format!(
-                        "vue.{}.{}.{}",
-                        component_name,
-                        capture_name,
-                        method_name.utf8_text(file_content.as_bytes()).unwrap()
-                    ),
-                    crate::api::Signature::VueMethod(VueMethod {
-                        parameters: params
-                            .utf8_text(file_content.as_bytes())
-                            .unwrap()
-                            .to_owned(),
-                        return_type: return_type
-                            .map(|n| n.utf8_text(file_content.as_bytes()).unwrap().to_owned()),
-                    }),
-                ));
+                collector.push(
+                    Surface::builder()
+                        .file_path(path.to_owned())
+                        .source_range(method_name.range())
+                        .fqn(format!(
+                            "vue.{}.{}.{}",
+                            component_name,
+                            capture_name,
+                            method_name.utf8_text(file_content.as_bytes()).unwrap()
+                        ))
+                        .signature(VueMethod {
+                            parameters: params
+                                .utf8_text(file_content.as_bytes())
+                                .unwrap()
+                                .to_owned(),
+                            return_type: return_type
+                                .map(|n| n.utf8_text(file_content.as_bytes()).unwrap().to_owned()),
+                        })
+                        .build()
+                        .unwrap(),
+                );
                 surface_count += 1;
 
                 continue;
@@ -107,32 +111,43 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
                 let key = c.node.child_by_field_id(field_id_key).unwrap();
                 let value = c.node.child_by_field_id(field_id_value).unwrap();
 
-                collector.push(Surface::with_signature(
-                    path.to_owned(),
-                    format!(
-                        "vue.{}.{}.{}",
-                        component_name,
-                        capture_name,
-                        key.utf8_text(file_content.as_bytes()).unwrap()
-                    ),
-                    crate::api::Signature::VueProp(VueProp {
-                        definition: value.utf8_text(file_content.as_bytes()).unwrap().to_owned(),
-                    }),
-                ));
+                collector.push(
+                    Surface::builder()
+                        .file_path(path.to_owned())
+                        .source_range(key.range())
+                        .fqn(format!(
+                            "vue.{}.{}.{}",
+                            component_name,
+                            capture_name,
+                            key.utf8_text(file_content.as_bytes()).unwrap()
+                        ))
+                        .signature(VueProp {
+                            definition: value
+                                .utf8_text(file_content.as_bytes())
+                                .unwrap()
+                                .to_owned(),
+                        })
+                        .build()
+                        .unwrap(),
+                );
                 surface_count += 1;
 
                 continue;
             }
 
-            collector.push(Surface::new(
-                path.to_owned(),
-                format!(
-                    "vue.{}.{}.{}",
-                    component_name,
-                    capture_name,
-                    c.node.utf8_text(file_content.as_bytes()).unwrap()
-                ),
-            ));
+            collector.push(
+                Surface::builder()
+                    .file_path(path.to_owned())
+                    .source_range(c.node.range())
+                    .fqn(format!(
+                        "vue.{}.{}.{}",
+                        component_name,
+                        capture_name,
+                        c.node.utf8_text(file_content.as_bytes()).unwrap()
+                    ))
+                    .build()
+                    .unwrap(),
+            );
             surface_count += 1;
         }
     });
