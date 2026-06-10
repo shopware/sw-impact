@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 use sw_impact_scanner::{
-    api::{diff_surface_maps, load_surface_map, save_surface_map},
+    api::{load_surface_map, save_surface_map},
+    report::Report,
     scan_dir, validate_queries,
 };
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
@@ -71,8 +72,9 @@ fn main() {
             eprintln!("loaded index with {} api surfaces", surface_index.len());
             let new_surface = scan_dir(&args.path).unwrap();
 
-            let diff = diff_surface_maps(&surface_index, &new_surface);
-            eprintln!("diff:\n{:#?}", diff);
+            let report = Report::build_report(&surface_index, &new_surface);
+            // TODO: implement proper output, respecting args.format
+            eprintln!("report:\n{:#?}", report);
         }
     }
 }

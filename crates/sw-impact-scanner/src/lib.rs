@@ -17,6 +17,7 @@ use crate::{
 pub enum ScanError {}
 
 pub mod api;
+pub mod report;
 pub mod vue;
 
 pub fn validate_queries() {

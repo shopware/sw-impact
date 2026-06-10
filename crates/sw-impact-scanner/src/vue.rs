@@ -77,6 +77,7 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
             }
 
             if c.node.kind_id() == kind_id_method {
+                let is_async = c.node.child(0).is_some_and(|child| child.kind() == "async");
                 let method_name = c.node.child_by_field_id(field_id_name).unwrap();
                 let params = c.node.child_by_field_id(field_id_parameters).unwrap();
                 let return_type = c.node.child_by_field_id(field_id_return_type);
@@ -92,12 +93,17 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
                             method_name.utf8_text(file_content.as_bytes()).unwrap()
                         ))
                         .signature(VueMethod {
+                            is_async,
                             parameters: params
                                 .utf8_text(file_content.as_bytes())
                                 .unwrap()
                                 .to_owned(),
-                            return_type: return_type
-                                .map(|n| n.utf8_text(file_content.as_bytes()).unwrap().to_owned()),
+                            return_type: return_type.map(|n| {
+                                n.utf8_text(file_content.as_bytes())
+                                    .unwrap()
+                                    .trim()
+                                    .to_owned()
+                            }),
                         })
                         .build()
                         .unwrap(),

@@ -1,3 +1,5 @@
+//! public API surface types and utility methods
+
 use std::{
     collections::HashMap,
     error::Error,
@@ -90,6 +92,7 @@ impl From<VueProp> for Signature {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct VueMethod {
+    pub is_async: bool,
     pub parameters: String, // TODO: proper parameter parsing
     pub return_type: Option<String>,
 }
@@ -97,6 +100,20 @@ pub struct VueMethod {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct VueProp {
     pub definition: String, // TODO: proper parsing
+}
+
+// TODO: use this
+/// Typescript / Javascript function declaration argument
+pub struct TsArg {
+    pub name: String,
+    /// e.g. 'foo: string'
+    pub type_annotation: Option<String>,
+    /// e.g. 'foo = 1'
+    pub default_value: Option<String>,
+    /// e.g. 'foo?'
+    pub is_optional: bool,
+    /// e.g. '...args'
+    pub is_rest: bool,
 }
 
 #[derive(Debug)]
@@ -189,29 +206,4 @@ pub fn load_surface_map(path: impl AsRef<Path>) -> Result<SurfaceMap, Box<dyn Er
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     Ok(serde_json::from_reader(reader)?)
-}
-
-/// Returns a SurfaceMap with only surfaces that where either:
-/// - removed in new
-/// - changed in new
-///
-/// Unless removed, it will return the Surface of the new Map, as that likely points
-/// to the current source code location.
-pub fn diff_surface_maps(old: &SurfaceMap, new: &SurfaceMap) -> SurfaceMap {
-    old.iter()
-        .filter_map(|(fqn, old_surface)| {
-            let Some(new_surface) = new.get(fqn.as_str()) else {
-                // was removed in new, return old one
-                return Some((fqn.clone(), old_surface.clone()));
-            };
-
-            if old_surface.signature != new_surface.signature {
-                // was changed, return new one
-                return Some((new_surface.fqn.clone(), new_surface.clone()));
-            }
-
-            None
-        })
-        .map(|(fqn, surface)| (fqn.clone(), surface.clone()))
-        .collect()
 }

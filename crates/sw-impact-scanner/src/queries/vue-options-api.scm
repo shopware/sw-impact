@@ -46,3 +46,5 @@
   )
 )
 
+; TODO: future idea: maybe scan for TS type definitions as well? only publicly used ones would be interesting though...
+
