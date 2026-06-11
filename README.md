@@ -6,7 +6,7 @@ Breaking change and public (extension) API static analyzer CLI tool, purpose bui
 > Very much WIP and in a rewrite right now, to build things properly and start with vision part 1.
 >
 > If you are looking for the previously vibe coded prototype, which reported impacted
-> extension usages for a breaking change (vision part 2), switch to the `vibe-prototype` branch.
+> extension usages for a breaking change (vision part 2), switch to the [`vibe-prototype` branch](https://github.com/shopware/sw-impact/tree/vibe-prototype)
 
 ## How to use
 
