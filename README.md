@@ -18,7 +18,7 @@ Breaking change and public (extension) API static analyzer CLI tool, purpose bui
 - Tests can be executed with `cargo test`
 - Linter can be executed with `cargo clippy`
 - Formatter can be exectued with `cargo fmt`
-- For iterating on changes, you can also execute `cargo run --release -- check ../shopware`
+- For iterating on changes, you can also execute e.g. `cargo run --release -- check ../shopware`
 
 ## Vision
 
@@ -31,8 +31,12 @@ Breaking change and public (extension) API static analyzer CLI tool, purpose bui
 Some design decisions to keep things simple:
 
 - All analysis only works on a per file basis to keep it simple and performant
+- All parsing happens through tree-sitter, no custom / specialized parsers per language,
+  which aren't based on tree-sitter
 - `.js` files are still parsed by the `TypeScript` grammar, to keep things simple and
   reuse the tree-sitter queries
+- Overall try to keep the codebase minimal and performant, it doesn't have to cover
+  every edge case, especially if it doesn't exists in Shopware's commerce core right now
 
 ## Features
 
@@ -40,15 +44,23 @@ Checkmarked means implemented.
 
 - [ ] Admin Vue.js components (not marked `@private` top level comment)
   - [x] Component existence under their approximated registered name, either by:
-    - `import template from './sw-model-editor.html.twig';`, using any `.html.twig` import that is in the same directory
-    - fallback to extract from the file path parent folder
-  - [x] Emit event names
+    - `import template from './sw-model-editor.html.twig';`, using the last `.html.twig` import that is in the same directory
+    - fallback to extract from the file path parent folder (mostly followed convention in commerce core)
+  - [x] Emit event names existience
   - [ ] Computed
+    - [x] existence
+    - [ ] signature breaks (return type)
   - [ ] Methods
+    - [x] existence
+    - [ ] signature breaks (arguments, return type, is async)
   - [ ] Properties
+    - [x] existence
+    - [ ] signature breaks (type, required)
 - [ ] Admin Twig templates
+  - [ ] block existence
 - [ ] Storefront Twig templates
-- [ ] PHP code (currently aleady covered by [Roave/BackwardCompatibilityCheck](https://github.com/Roave/BackwardCompatibilityCheck))
+  - [ ] block existence
+- [ ] (optional) PHP code (currently aleady covered by [Roave/BackwardCompatibilityCheck](https://github.com/Roave/BackwardCompatibilityCheck))
 - [ ] Lint output formats
   - [ ] Pretty human readable
   - [ ] Json (AI / downstream readable)
@@ -60,6 +72,10 @@ That might or might not be implemented at some point:
 
 - [ ] `sw-impact search` command, to query the shopware codebase by tree-sitter query and file type
 - [ ] `sw-impact inspect` command, to inspect the tree-sitter syntax tree of a given file
+- [ ] further breaking change check ideas, also looking at our [Backward Compatibility](https://developer.shopware.com/docs/resources/guidelines/code/backward-compatibility.html#backward-compatibility)
+      guidelines.
+  - [ ] HTTP API schemas
+  - [ ] Entity definitions
 
 ## Development tips
 
