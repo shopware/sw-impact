@@ -74,13 +74,13 @@ impl SurfaceBuilder {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Signature {
     None,
-    VueMethod(VueMethod),
+    TsMethod(TsMethod),
     VueProp(VueProp),
 }
 
-impl From<VueMethod> for Signature {
-    fn from(value: VueMethod) -> Self {
-        Signature::VueMethod(value)
+impl From<TsMethod> for Signature {
+    fn from(value: TsMethod) -> Self {
+        Signature::TsMethod(value)
     }
 }
 
@@ -91,9 +91,9 @@ impl From<VueProp> for Signature {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct VueMethod {
+pub struct TsMethod {
     pub is_async: bool,
-    pub parameters: String, // TODO: proper parameter parsing
+    pub parameters: Vec<TsParam>,
     pub return_type: Option<String>,
 }
 
@@ -102,9 +102,9 @@ pub struct VueProp {
     pub definition: String, // TODO: proper parsing
 }
 
-// TODO: use this
-/// Typescript / Javascript function declaration argument
-pub struct TsArg {
+/// Typescript / Javascript function declaration parameter
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TsParam {
     pub name: String,
     /// e.g. 'foo: string'
     pub type_annotation: Option<String>,

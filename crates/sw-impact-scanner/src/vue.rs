@@ -3,7 +3,7 @@ use std::{path::Path, sync::LazyLock};
 use tracing::{error, info, warn};
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator};
 
-use crate::api::{Surface, SurfaceCollector, VueMethod, VueProp};
+use crate::api::{Surface, SurfaceCollector, TsMethod, TsParam, VueProp};
 
 static QUERY_FILE: LazyLock<Query> = LazyLock::new(|| {
     Query::new(
@@ -80,31 +80,34 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
                 let is_async = c.node.child(0).is_some_and(|child| child.kind() == "async");
                 let method_name = c.node.child_by_field_id(field_id_name).unwrap();
                 let params = c.node.child_by_field_id(field_id_parameters).unwrap();
-                let return_type = c.node.child_by_field_id(field_id_return_type);
+                let return_type = c
+                    .node
+                    .child_by_field_id(field_id_return_type)
+                    .and_then(|n| n.named_child(0)); // skip ':' and access inner node
+
+                let fqn = format!(
+                    "vue.{}.{}.{}",
+                    component_name,
+                    capture_name,
+                    method_name.utf8_text(file_content.as_bytes()).unwrap()
+                );
 
                 collector.push(
                     Surface::builder()
                         .file_path(path.to_owned())
                         .source_range(method_name.range())
-                        .fqn(format!(
-                            "vue.{}.{}.{}",
-                            component_name,
-                            capture_name,
-                            method_name.utf8_text(file_content.as_bytes()).unwrap()
-                        ))
-                        .signature(VueMethod {
+                        .signature(TsMethod {
                             is_async,
-                            parameters: params
-                                .utf8_text(file_content.as_bytes())
-                                .unwrap()
-                                .to_owned(),
+                            parameters: extract_ts_method_params(
+                                &fqn,
+                                params,
+                                file_content.as_bytes(),
+                            ),
                             return_type: return_type.map(|n| {
-                                n.utf8_text(file_content.as_bytes())
-                                    .unwrap()
-                                    .trim()
-                                    .to_owned()
+                                normalize_ws(n.utf8_text(file_content.as_bytes()).unwrap())
                             }),
                         })
+                        .fqn(fqn)
                         .build()
                         .unwrap(),
                 );
@@ -128,10 +131,9 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
                             key.utf8_text(file_content.as_bytes()).unwrap()
                         ))
                         .signature(VueProp {
-                            definition: value
-                                .utf8_text(file_content.as_bytes())
-                                .unwrap()
-                                .to_owned(),
+                            definition: normalize_ws(
+                                value.utf8_text(file_content.as_bytes()).unwrap(),
+                            ),
                         })
                         .build()
                         .unwrap(),
@@ -221,6 +223,64 @@ fn scan_file_top_level<'a>(root: Node<'a>, source: &[u8], path: &Path) -> VueFil
     }
 
     vue_file
+}
+
+fn extract_ts_method_params(fqn: &str, n: Node, source: &[u8]) -> Vec<TsParam> {
+    let mut cursor = n.walk();
+
+    n.named_children(&mut cursor)
+        .filter_map(|param| ts_param_from_tree_sitter(fqn, param, source))
+        .collect()
+}
+
+fn ts_param_from_tree_sitter(fqn: &str, param: Node, source: &[u8]) -> Option<TsParam> {
+    match param.kind() {
+        // TS / JS:
+        // foo
+        // foo: string
+        // foo = 1
+        // foo: string = "x"
+        // foo?: string
+        // ...rest
+        // { destructure }
+        "required_parameter" | "optional_parameter" => {
+            let pattern = param.child_by_field_name("pattern")?;
+            let name = if pattern.kind() == "rest_pattern" {
+                // use parameter name without leading ...
+                pattern.named_child(0).unwrap()
+            } else {
+                pattern
+            };
+
+            Some(TsParam {
+                name: normalize_ws(name.utf8_text(source).unwrap()),
+                type_annotation: param
+                    .child_by_field_name("type")
+                    .and_then(|n| n.named_child(0)) // access inner node of 'type_annotation' to skip ':'
+                    .map(|n| normalize_ws(n.utf8_text(source).unwrap())),
+                default_value: param
+                    .child_by_field_name("value")
+                    .map(|n| normalize_ws(n.utf8_text(source).unwrap())),
+                is_optional: param.kind() == "optional_parameter",
+                is_rest: pattern.kind() == "rest_pattern",
+            })
+        }
+
+        _ => {
+            error!(
+                "failed to parse TS method param in {}, ignoring: {}",
+                fqn,
+                param.utf8_text(source).unwrap()
+            );
+            None
+        }
+    }
+}
+
+/// Replaces all whitespace with a single space
+fn normalize_ws(s: &str) -> String {
+    // TODO: check performance impact on this, could be optimized if needed
+    s.split_ascii_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn extract_component_name_from_template(s: &str) -> Option<String> {

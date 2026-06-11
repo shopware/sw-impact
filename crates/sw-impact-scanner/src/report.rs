@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::api::{Signature, SourceRange, Surface, SurfaceMap, VueMethod, VueProp};
+use crate::api::{Signature, SourceRange, Surface, SurfaceMap, TsMethod, VueProp};
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Report {
@@ -67,7 +67,7 @@ impl Report {
 
         match (&base.signature, &new.signature) {
             (Signature::None, Signature::None) => {}
-            (Signature::VueMethod(base_method), Signature::VueMethod(new_method)) => {
+            (Signature::TsMethod(base_method), Signature::TsMethod(new_method)) => {
                 self.diff_vue_method(new, base_method, new_method)
             }
             (Signature::VueProp(base_prop), Signature::VueProp(new_prop)) => {
@@ -77,7 +77,7 @@ impl Report {
         }
     }
 
-    fn diff_vue_method(&mut self, surface: &Surface, base: &VueMethod, new: &VueMethod) {
+    fn diff_vue_method(&mut self, surface: &Surface, base: &TsMethod, new: &TsMethod) {
         // TODO: implement me
     }
 
