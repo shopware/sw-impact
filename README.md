@@ -1,0 +1,70 @@
+# sw-impact
+
+Breaking change and public (extension) API static analyzer CLI tool, purpose build for Shopware.
+
+> [!NOTE]
+> Very much WIP and in a rewrite right now, to build things properly and start with vision part 1.
+>
+> If you are looking for the previously vibe coded prototype, which reported impacted
+> extension usages for a breaking change (vision part 2), switch to the `vibe-prototype` branch.
+
+## How to use
+
+1. Checkout this Repo
+2. Have [Rust](https://rust-lang.org/) installed
+3. Run `cargo build --release`
+4. Afterwards you can use your executable under `./target/release/sw-impact`
+
+- Tests can be executed with `cargo test`
+- Linter can be executed with `cargo clippy`
+- Formatter can be exectued with `cargo fmt`
+- For iterating on changes, you can also execute `cargo run --release -- check ../shopware`
+
+## Vision
+
+1. Detect and flag any (possible) breaking change to the public (extension) API that the Shopware commerce core exposes
+2. (Optional) show (possible) impact evidence based on real extensions using the API,
+   utilizing the source code of all extensions published in our own extension store.
+
+## Contraints
+
+Some design decisions to keep things simple:
+
+- All analysis only works on a per file basis to keep it simple and performant
+- `.js` files are still parsed by the `TypeScript` grammar, to keep things simple and
+  reuse the tree-sitter queries
+
+## Features
+
+Checkmarked means implemented.
+
+- [ ] Admin Vue.js components (not marked `@private` top level comment)
+  - [x] Component existence under their approximated registered name, either by:
+    - `import template from './sw-model-editor.html.twig';`, using any `.html.twig` import that is in the same directory
+    - fallback to extract from the file path parent folder
+  - [x] Emit event names
+  - [ ] Computed
+  - [ ] Methods
+  - [ ] Properties
+- [ ] Admin Twig templates
+- [ ] Storefront Twig templates
+- [ ] PHP code (currently aleady covered by [Roave/BackwardCompatibilityCheck](https://github.com/Roave/BackwardCompatibilityCheck))
+- [ ] Lint output formats
+  - [ ] Pretty human readable
+  - [ ] Json (AI / downstream readable)
+  - [ ] GitHub workflow PR annotations
+
+## Ideas
+
+That might or might not be implemented at some point:
+
+- [ ] `sw-impact search` command, to query the shopware codebase by tree-sitter query and file type
+- [ ] `sw-impact inspect` command, to inspect the tree-sitter syntax tree of a given file
+
+## Development tips
+
+- Be familiar with [tree-sitter](https://tree-sitter.github.io/tree-sitter/index.html)
+- For building and testing tree-sitter queries:
+  - You can experiment with their [playground](https://tree-sitter.github.io/tree-sitter/7-playground.html)
+  - Or in Neovim, run `:InspectTree`, you can open the a query editor by pressing `o`
+
