@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::api::{Signature, SourceRange, Surface, SurfaceMap, TsMethod, VueProp};
+use crate::api::{Signature, SourceToken, Surface, SurfaceMap, TsMethod, VueProp};
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Report {
@@ -19,16 +19,17 @@ pub struct Report {
 pub struct SignatureChange {
     pub surface: Surface,
     pub kind: SignatureChangeKind,
-    pub source_range: SourceRange,
+    pub old: Option<SourceToken>,
+    pub new: Option<SourceToken>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum SignatureChangeKind {
-    VueMethodParamRemoved,
-    VueMethodParamTypeChanged,
-    VueMethodRequiredParamAdded,
-    VueMethodReturnTypeChanged,
-    VueMethodAsyncChanged,
+    TsMethodParamRemoved,
+    TsMethodParamTypeChanged,
+    TsMethodRequiredParamAdded,
+    TsMethodReturnTypeChanged,
+    TsMethodAsyncChanged,
 }
 
 impl Report {
@@ -68,7 +69,7 @@ impl Report {
         match (&base.signature, &new.signature) {
             (Signature::None, Signature::None) => {}
             (Signature::TsMethod(base_method), Signature::TsMethod(new_method)) => {
-                self.diff_vue_method(new, base_method, new_method)
+                self.diff_ts_method(new, base_method, new_method)
             }
             (Signature::VueProp(base_prop), Signature::VueProp(new_prop)) => {
                 self.diff_vue_prop(new, base_prop, new_prop)
@@ -77,8 +78,58 @@ impl Report {
         }
     }
 
-    fn diff_vue_method(&mut self, surface: &Surface, base: &TsMethod, new: &TsMethod) {
-        // TODO: implement me
+    fn diff_ts_method(&mut self, surface: &Surface, base: &TsMethod, new: &TsMethod) {
+        if base.r#async != new.r#async {
+            self.breaking_changes.push(SignatureChange {
+                surface: surface.clone(),
+                kind: SignatureChangeKind::TsMethodAsyncChanged,
+                old: base.r#async.clone(),
+                new: new.r#async.clone(),
+            });
+        }
+
+        if base.return_type != new.return_type {
+            self.breaking_changes.push(SignatureChange {
+                surface: surface.clone(),
+                kind: SignatureChangeKind::TsMethodReturnTypeChanged,
+                old: base.return_type.clone(),
+                new: new.return_type.clone(),
+            });
+
+            return;
+        }
+
+        // check for added required parameter
+        if new.parameters.len() > base.parameters.len() {
+            for i in base.parameters.len()..new.parameters.len() {
+                let param = &new.parameters[i];
+
+                if param.optional.is_none() && param.default_value.is_none() {
+                    self.breaking_changes.push(SignatureChange {
+                        surface: surface.clone(),
+                        kind: SignatureChangeKind::TsMethodRequiredParamAdded,
+                        old: None,
+                        new: Some(param.name.clone()),
+                    });
+                }
+            }
+        }
+
+        // check for removed parameter
+        if base.parameters.len() > new.parameters.len() {
+            for i in new.parameters.len()..base.parameters.len() {
+                let param = &base.parameters[i];
+
+                self.breaking_changes.push(SignatureChange {
+                    surface: surface.clone(),
+                    kind: SignatureChangeKind::TsMethodParamRemoved,
+                    old: Some(param.name.clone()),
+                    new: None,
+                });
+            }
+        }
+
+        // TODO: compare each parameter for breaking changes
     }
 
     fn diff_vue_prop(&mut self, surface: &Surface, base: &VueProp, new: &VueProp) {

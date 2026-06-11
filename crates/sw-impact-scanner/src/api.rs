@@ -11,6 +11,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tracing::{error, trace};
+use tree_sitter::Node;
 
 pub type SurfaceMap = HashMap<String, Surface>;
 
@@ -71,7 +72,7 @@ impl SurfaceBuilder {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Signature {
     None,
     TsMethod(TsMethod),
@@ -90,30 +91,30 @@ impl From<VueProp> for Signature {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TsMethod {
-    pub is_async: bool,
+    pub r#async: Option<SourceToken>,
     pub parameters: Vec<TsParam>,
-    pub return_type: Option<String>,
+    pub return_type: Option<SourceToken>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VueProp {
-    pub definition: String, // TODO: proper parsing
+    pub definition: SourceToken, // TODO: proper parsing
 }
 
 /// Typescript / Javascript function declaration parameter
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TsParam {
-    pub name: String,
+    pub name: SourceToken,
     /// e.g. 'foo: string'
-    pub type_annotation: Option<String>,
+    pub type_annotation: Option<SourceToken>,
     /// e.g. 'foo = 1'
-    pub default_value: Option<String>,
+    pub default_value: Option<SourceToken>,
     /// e.g. 'foo?'
-    pub is_optional: bool,
+    pub optional: Option<SourceToken>,
     /// e.g. '...args'
-    pub is_rest: bool,
+    pub rest: Option<SourceToken>,
 }
 
 #[derive(Debug)]
@@ -148,6 +149,34 @@ impl SurfaceCollector {
 impl Default for SurfaceCollector {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Source text + range in the file
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceToken {
+    pub text_normalized: String,
+    pub source_range: SourceRange,
+}
+
+impl SourceToken {
+    pub fn from_node_source(node: Node, src: &[u8]) -> Self {
+        Self {
+            text_normalized: Self::normalize_ws(node.utf8_text(src).unwrap()),
+            source_range: node.range().into(),
+        }
+    }
+
+    /// Replaces all whitespace with a single space
+    fn normalize_ws(s: &str) -> String {
+        s.split_ascii_whitespace().collect::<Vec<_>>().join(" ")
+    }
+}
+
+impl PartialEq for SourceToken {
+    /// intentionally ignores source_range and only compares based on text_normalized
+    fn eq(&self, other: &Self) -> bool {
+        self.text_normalized == other.text_normalized
     }
 }
 

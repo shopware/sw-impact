@@ -3,7 +3,7 @@ use std::{path::Path, sync::LazyLock};
 use tracing::{error, info, warn};
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator};
 
-use crate::api::{Surface, SurfaceCollector, TsMethod, TsParam, VueProp};
+use crate::api::{SourceToken, Surface, SurfaceCollector, TsMethod, TsParam, VueProp};
 
 static QUERY_FILE: LazyLock<Query> = LazyLock::new(|| {
     Query::new(
@@ -37,11 +37,12 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
     parser.set_language(lang).unwrap();
 
     let file_content = std::fs::read_to_string(path).unwrap();
+    let src = file_content.as_bytes();
 
-    let tree = parser.parse(file_content.as_bytes(), None).unwrap();
+    let tree = parser.parse(src, None).unwrap();
     let root = tree.root_node();
 
-    let vue_file = scan_file_top_level(root, file_content.as_bytes(), path);
+    let vue_file = scan_file_top_level(root, src, path);
     let Some(obj) = vue_file.options_obj else {
         info!("skipping (no vue component): {}", path.display());
         return;
@@ -60,7 +61,7 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
 
     info!("parsing {} from ({})", &component_name, path.display());
     let mut cursor = QueryCursor::new();
-    let matches = cursor.matches(&QUERY_OBJ, obj, file_content.as_bytes());
+    let matches = cursor.matches(&QUERY_OBJ, obj, src);
     let capture_names = QUERY_OBJ.capture_names();
     let mut surface_count = 0;
     matches.for_each(|m| {
@@ -71,7 +72,7 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
             }
 
             if c.node.kind() == "method_definition" {
-                let is_async = c.node.child(0).is_some_and(|child| child.kind() == "async");
+                let r#async = c.node.child(0).filter(|child| child.kind() == "async");
                 let method_name = c.node.child_by_field_name("name").unwrap();
                 let params = c.node.child_by_field_name("parameters").unwrap();
                 let return_type = c
@@ -83,7 +84,7 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
                     "vue.{}.{}.{}",
                     component_name,
                     capture_name,
-                    method_name.utf8_text(file_content.as_bytes()).unwrap()
+                    method_name.utf8_text(src).unwrap()
                 );
 
                 collector.push(
@@ -91,15 +92,9 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
                         .file_path(path.to_owned())
                         .source_range(method_name.range())
                         .signature(TsMethod {
-                            is_async,
-                            parameters: extract_ts_method_params(
-                                &fqn,
-                                params,
-                                file_content.as_bytes(),
-                            ),
-                            return_type: return_type.map(|n| {
-                                normalize_ws(n.utf8_text(file_content.as_bytes()).unwrap())
-                            }),
+                            r#async: r#async.map(|n| SourceToken::from_node_source(n, src)),
+                            parameters: extract_ts_method_params(&fqn, params, src),
+                            return_type: return_type.map(|n| SourceToken::from_node_source(n, src)),
                         })
                         .fqn(fqn)
                         .build()
@@ -122,12 +117,10 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
                             "vue.{}.{}.{}",
                             component_name,
                             capture_name,
-                            key.utf8_text(file_content.as_bytes()).unwrap()
+                            key.utf8_text(src).unwrap()
                         ))
                         .signature(VueProp {
-                            definition: normalize_ws(
-                                value.utf8_text(file_content.as_bytes()).unwrap(),
-                            ),
+                            definition: SourceToken::from_node_source(value, src),
                         })
                         .build()
                         .unwrap(),
@@ -145,7 +138,7 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
                         "vue.{}.{}.{}",
                         component_name,
                         capture_name,
-                        c.node.utf8_text(file_content.as_bytes()).unwrap()
+                        c.node.utf8_text(src).unwrap()
                     ))
                     .build()
                     .unwrap(),
@@ -171,9 +164,9 @@ struct VueFile<'a> {
 
 /// Returns the TS / JS object defining the vue component with options api
 /// If it exists or nothing if the component is declared as @private in a comment
-fn scan_file_top_level<'a>(root: Node<'a>, source: &[u8], path: &Path) -> VueFile<'a> {
+fn scan_file_top_level<'a>(root: Node<'a>, src: &[u8], path: &Path) -> VueFile<'a> {
     let mut cursor = QueryCursor::new();
-    let matches = cursor.matches(&QUERY_FILE, root, source);
+    let matches = cursor.matches(&QUERY_FILE, root, src);
     let capture_names = QUERY_FILE.capture_names();
 
     let mut vue_file = VueFile {
@@ -191,7 +184,7 @@ fn scan_file_top_level<'a>(root: Node<'a>, source: &[u8], path: &Path) -> VueFil
             }
 
             if *capture_name == "toplevel.comment" {
-                let text = c.node.utf8_text(source).unwrap();
+                let text = c.node.utf8_text(src).unwrap();
 
                 if text.contains("@private") {
                     vue_file.is_private = true;
@@ -200,7 +193,7 @@ fn scan_file_top_level<'a>(root: Node<'a>, source: &[u8], path: &Path) -> VueFil
             }
 
             if *capture_name == "import" {
-                let text = c.node.utf8_text(source).unwrap();
+                let text = c.node.utf8_text(src).unwrap();
                 if let Some(component_name) = extract_component_name_from_template(text) {
                     vue_file.component_name = Some(component_name);
                 }
@@ -219,15 +212,15 @@ fn scan_file_top_level<'a>(root: Node<'a>, source: &[u8], path: &Path) -> VueFil
     vue_file
 }
 
-fn extract_ts_method_params(fqn: &str, n: Node, source: &[u8]) -> Vec<TsParam> {
+fn extract_ts_method_params(fqn: &str, n: Node, src: &[u8]) -> Vec<TsParam> {
     let mut cursor = n.walk();
 
     n.named_children(&mut cursor)
-        .filter_map(|param| ts_param_from_tree_sitter(fqn, param, source))
+        .filter_map(|param| ts_param_from_tree_sitter(fqn, param, src))
         .collect()
 }
 
-fn ts_param_from_tree_sitter(fqn: &str, param: Node, source: &[u8]) -> Option<TsParam> {
+fn ts_param_from_tree_sitter(fqn: &str, param: Node, src: &[u8]) -> Option<TsParam> {
     match param.kind() {
         // TS / JS:
         // foo
@@ -247,16 +240,30 @@ fn ts_param_from_tree_sitter(fqn: &str, param: Node, source: &[u8]) -> Option<Ts
             };
 
             Some(TsParam {
-                name: normalize_ws(name.utf8_text(source).unwrap()),
+                name: SourceToken::from_node_source(name, src),
                 type_annotation: param
                     .child_by_field_name("type")
                     .and_then(|n| n.named_child(0)) // access inner node of 'type_annotation' to skip ':'
-                    .map(|n| normalize_ws(n.utf8_text(source).unwrap())),
+                    .map(|n| SourceToken::from_node_source(n, src)),
                 default_value: param
                     .child_by_field_name("value")
-                    .map(|n| normalize_ws(n.utf8_text(source).unwrap())),
-                is_optional: param.kind() == "optional_parameter",
-                is_rest: pattern.kind() == "rest_pattern",
+                    .map(|n| SourceToken::from_node_source(n, src)),
+                optional: if param.kind() == "optional_parameter" {
+                    let mut cursor = param.walk();
+                    param
+                        .children(&mut cursor)
+                        .find(|c| c.kind() == "?")
+                        .map(|n| SourceToken::from_node_source(n, src))
+                } else {
+                    None
+                },
+                rest: if pattern.kind() == "rest_pattern" {
+                    pattern
+                        .child(0)
+                        .map(|n| SourceToken::from_node_source(n, src))
+                } else {
+                    None
+                },
             })
         }
 
@@ -264,16 +271,11 @@ fn ts_param_from_tree_sitter(fqn: &str, param: Node, source: &[u8]) -> Option<Ts
             error!(
                 "failed to parse TS method param in {}, ignoring: {}",
                 fqn,
-                param.utf8_text(source).unwrap()
+                param.utf8_text(src).unwrap()
             );
             None
         }
     }
-}
-
-/// Replaces all whitespace with a single space
-fn normalize_ws(s: &str) -> String {
-    s.split_ascii_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn extract_component_name_from_template(s: &str) -> Option<String> {
