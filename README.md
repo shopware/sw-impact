@@ -8,17 +8,25 @@ Breaking change and public (extension) API static analyzer CLI tool, purpose bui
 > If you are looking for the previously vibe coded prototype, which reported impacted
 > extension usages for a breaking change (vision part 2), switch to the [`vibe-prototype` branch](https://github.com/shopware/sw-impact/tree/vibe-prototype)
 
-## How to use
+## How to install
 
 1. Checkout this Repo
 2. Have [Rust](https://rust-lang.org/) installed
 3. Run `cargo build --release`
 4. Afterwards you can use your executable under `./target/release/sw-impact`
 
-- Tests can be executed with `cargo test`
-- Linter can be executed with `cargo clippy`
-- Formatter can be exectued with `cargo fmt`
-- For iterating on changes, you can also execute e.g. `cargo run --release -- check ../shopware`
+
+## How to use
+
+In general run `sw-impact --help` for latest CLI use instructions.
+
+1. Have the shopware codebase cloned and checkout a "base" branch you want to compare against
+2. Run `sw-impact index ../path/to/shopware`
+3. Make changes in your shopware codebase or checkout a different state
+4. Run `sw-impact check ../path/to/shopware` and see the breaking change report
+
+> [!NOTE]
+> Step 1 and 2 might be simplified at some point, e.g. the tool could check it out itself
 
 ## Vision
 
@@ -79,6 +87,13 @@ That might or might not be implemented at some point:
 
 ## Development tips
 
+Basics (if you are new to Rust):
+- Tests can be executed with `cargo test`
+- Linter can be executed with `cargo clippy`
+- Formatter can be exectued with `cargo fmt`
+- For iterating on changes, you can also execute e.g. `cargo run --release -- check ../shopware`
+
+Advanced:
 - Be familiar with [tree-sitter](https://tree-sitter.github.io/tree-sitter/index.html)
 - For building and testing tree-sitter queries:
   - You can experiment with their [playground](https://tree-sitter.github.io/tree-sitter/7-playground.html)
