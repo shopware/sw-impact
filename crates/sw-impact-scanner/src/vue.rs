@@ -25,19 +25,13 @@ static QUERY_OBJ: LazyLock<Query> = LazyLock::new(|| {
 });
 
 pub fn validate_queries() {
+    // initialize LazyLocks and panic on failure
     let _ = &*QUERY_FILE;
     let _ = &*QUERY_OBJ;
 }
 
 pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
     let lang: &Language = &tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
-    let kind_id_method = lang.id_for_node_kind("method_definition", true);
-    let kind_id_pair = lang.id_for_node_kind("pair", true);
-    let field_id_name: u16 = lang.field_id_for_name("name").unwrap().into();
-    let field_id_parameters: u16 = lang.field_id_for_name("parameters").unwrap().into();
-    let field_id_return_type: u16 = lang.field_id_for_name("return_type").unwrap().into();
-    let field_id_key: u16 = lang.field_id_for_name("key").unwrap().into();
-    let field_id_value: u16 = lang.field_id_for_name("value").unwrap().into();
 
     let mut parser = Parser::new();
     parser.set_language(lang).unwrap();
@@ -76,13 +70,13 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
                 continue; // ignore captures starting with underscore
             }
 
-            if c.node.kind_id() == kind_id_method {
+            if c.node.kind() == "method_definition" {
                 let is_async = c.node.child(0).is_some_and(|child| child.kind() == "async");
-                let method_name = c.node.child_by_field_id(field_id_name).unwrap();
-                let params = c.node.child_by_field_id(field_id_parameters).unwrap();
+                let method_name = c.node.child_by_field_name("name").unwrap();
+                let params = c.node.child_by_field_name("parameters").unwrap();
                 let return_type = c
                     .node
-                    .child_by_field_id(field_id_return_type)
+                    .child_by_field_name("return_type")
                     .and_then(|n| n.named_child(0)); // skip ':' and access inner node
 
                 let fqn = format!(
@@ -116,9 +110,9 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
                 continue;
             }
 
-            if c.node.kind_id() == kind_id_pair && *capture_name == "prop" {
-                let key = c.node.child_by_field_id(field_id_key).unwrap();
-                let value = c.node.child_by_field_id(field_id_value).unwrap();
+            if c.node.kind() == "pair" && *capture_name == "prop" {
+                let key = c.node.child_by_field_name("key").unwrap();
+                let value = c.node.child_by_field_name("value").unwrap();
 
                 collector.push(
                     Surface::builder()
@@ -279,7 +273,6 @@ fn ts_param_from_tree_sitter(fqn: &str, param: Node, source: &[u8]) -> Option<Ts
 
 /// Replaces all whitespace with a single space
 fn normalize_ws(s: &str) -> String {
-    // TODO: check performance impact on this, could be optimized if needed
     s.split_ascii_whitespace().collect::<Vec<_>>().join(" ")
 }
 
