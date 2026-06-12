@@ -27,6 +27,8 @@ pub struct SignatureChange {
 pub enum SignatureChangeKind {
     TsMethodParamRemoved,
     TsMethodParamTypeChanged,
+    TsMethodParamRestChanged,
+    TsMethodParamBecameRequired,
     TsMethodRequiredParamAdded,
     TsMethodReturnTypeChanged,
     TsMethodAsyncChanged,
@@ -99,37 +101,61 @@ impl Report {
             return;
         }
 
-        // check for added required parameter
-        if new.parameters.len() > base.parameters.len() {
-            for i in base.parameters.len()..new.parameters.len() {
-                let param = &new.parameters[i];
-
-                if param.optional.is_none() && param.default_value.is_none() {
-                    self.breaking_changes.push(SignatureChange {
-                        surface: surface.clone(),
-                        kind: SignatureChangeKind::TsMethodRequiredParamAdded,
-                        old: None,
-                        new: Some(param.name.clone()),
-                    });
-                }
-            }
-        }
-
-        // check for removed parameter
-        if base.parameters.len() > new.parameters.len() {
-            for i in new.parameters.len()..base.parameters.len() {
-                let param = &base.parameters[i];
-
+        // check each parameter
+        for (base_param, new_param) in base.parameters.iter().zip(new.parameters.iter()) {
+            if base_param.optional != new_param.optional && new_param.default_value.is_none() {
                 self.breaking_changes.push(SignatureChange {
                     surface: surface.clone(),
-                    kind: SignatureChangeKind::TsMethodParamRemoved,
-                    old: Some(param.name.clone()),
-                    new: None,
+                    kind: SignatureChangeKind::TsMethodParamBecameRequired,
+                    old: base_param.optional.clone(),
+                    new: new_param.optional.clone(),
+                });
+            }
+
+            if base_param.type_annotation != new_param.type_annotation {
+                self.breaking_changes.push(SignatureChange {
+                    surface: surface.clone(),
+                    kind: SignatureChangeKind::TsMethodParamTypeChanged,
+                    old: base_param.type_annotation.clone(),
+                    new: new_param.type_annotation.clone(),
+                });
+            }
+
+            if base_param.rest != new_param.rest {
+                self.breaking_changes.push(SignatureChange {
+                    surface: surface.clone(),
+                    kind: SignatureChangeKind::TsMethodParamRestChanged,
+                    old: base_param.rest.clone(),
+                    new: new_param.rest.clone(),
                 });
             }
         }
 
-        // TODO: compare each parameter for breaking changes
+        // check for added required parameter
+        for i in base.parameters.len()..new.parameters.len() {
+            let param = &new.parameters[i];
+
+            if param.optional.is_none() && param.default_value.is_none() {
+                self.breaking_changes.push(SignatureChange {
+                    surface: surface.clone(),
+                    kind: SignatureChangeKind::TsMethodRequiredParamAdded,
+                    old: None,
+                    new: Some(param.name.clone()),
+                });
+            }
+        }
+
+        // check for removed parameter
+        for i in new.parameters.len()..base.parameters.len() {
+            let param = &base.parameters[i];
+
+            self.breaking_changes.push(SignatureChange {
+                surface: surface.clone(),
+                kind: SignatureChangeKind::TsMethodParamRemoved,
+                old: Some(param.name.clone()),
+                new: None,
+            });
+        }
     }
 
     fn diff_vue_prop(&mut self, surface: &Surface, base: &VueProp, new: &VueProp) {

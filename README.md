@@ -55,12 +55,12 @@ Checkmarked means implemented.
     - `import template from './sw-model-editor.html.twig';`, using the last `.html.twig` import that is in the same directory
     - fallback to extract from the file path parent folder (mostly followed convention in commerce core)
   - [x] Emit event names existience
-  - [ ] Computed
+  - [x] Computed
     - [x] existence
-    - [ ] signature breaks (return type)
-  - [ ] Methods
+    - [x] signature breaks (return type)
+  - [x] Methods
     - [x] existence
-    - [ ] signature breaks (arguments, return type, is async)
+    - [x] signature breaks (arguments, return type, is async)
   - [ ] Properties
     - [x] existence
     - [ ] signature breaks (type, required)
