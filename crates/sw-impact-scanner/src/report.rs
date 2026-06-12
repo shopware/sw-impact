@@ -1,5 +1,7 @@
 //! breaking change detection and its types
 
+use std::fmt::Display;
+
 use serde::Serialize;
 
 use crate::api::{Signature, SourceToken, Surface, SurfaceMap, TsMethod, VueProp};
@@ -32,6 +34,30 @@ pub enum SignatureChangeKind {
     TsMethodRequiredParamAdded,
     TsMethodReturnTypeChanged,
     TsMethodAsyncChanged,
+}
+
+impl Display for SignatureChangeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SignatureChangeKind::TsMethodParamRemoved => write!(f, "ts:method:param:removed"),
+            SignatureChangeKind::TsMethodParamTypeChanged => {
+                write!(f, "ts:method:param:type:changed")
+            }
+            SignatureChangeKind::TsMethodParamRestChanged => {
+                write!(f, "ts:method:param:rest:changed")
+            }
+            SignatureChangeKind::TsMethodParamBecameRequired => {
+                write!(f, "ts:method:param:became:required")
+            }
+            SignatureChangeKind::TsMethodRequiredParamAdded => {
+                write!(f, "ts:method:required:param:added")
+            }
+            SignatureChangeKind::TsMethodReturnTypeChanged => {
+                write!(f, "ts:method:return:type:changed")
+            }
+            SignatureChangeKind::TsMethodAsyncChanged => write!(f, "ts:method:async:changed"),
+        }
+    }
 }
 
 impl Report {
@@ -96,6 +122,13 @@ impl Report {
                 kind: SignatureChangeKind::TsMethodReturnTypeChanged,
                 old: base.return_type.clone(),
                 new: new.return_type.clone(),
+                // TODO: fix these to always provide new SourceToken
+                /*
+                    new: match &new.return_type {
+                        Some(t) => Some(t.clone()),
+                        None => Some(surface.source_range.clone()),
+                    },
+                */
             });
 
             return;
@@ -108,7 +141,10 @@ impl Report {
                     surface: surface.clone(),
                     kind: SignatureChangeKind::TsMethodParamBecameRequired,
                     old: base_param.optional.clone(),
-                    new: new_param.optional.clone(),
+                    new: match &new_param.optional {
+                        Some(t) => Some(t.clone()),
+                        None => Some(new_param.name.clone()),
+                    },
                 });
             }
 
@@ -117,7 +153,10 @@ impl Report {
                     surface: surface.clone(),
                     kind: SignatureChangeKind::TsMethodParamTypeChanged,
                     old: base_param.type_annotation.clone(),
-                    new: new_param.type_annotation.clone(),
+                    new: match &new_param.type_annotation {
+                        Some(t) => Some(t.clone()),
+                        None => Some(new_param.name.clone()),
+                    },
                 });
             }
 
@@ -126,7 +165,10 @@ impl Report {
                     surface: surface.clone(),
                     kind: SignatureChangeKind::TsMethodParamRestChanged,
                     old: base_param.rest.clone(),
-                    new: new_param.rest.clone(),
+                    new: match &new_param.rest {
+                        Some(t) => Some(t.clone()),
+                        None => Some(new_param.name.clone()),
+                    },
                 });
             }
         }
@@ -153,7 +195,7 @@ impl Report {
                 surface: surface.clone(),
                 kind: SignatureChangeKind::TsMethodParamRemoved,
                 old: Some(param.name.clone()),
-                new: None,
+                new: None, // TODO: fix, always provide new SourceToken
             });
         }
     }

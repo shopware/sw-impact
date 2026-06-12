@@ -71,7 +71,7 @@ Checkmarked means implemented.
 - [ ] (optional) PHP code (currently aleady covered by [Roave/BackwardCompatibilityCheck](https://github.com/Roave/BackwardCompatibilityCheck))
 - [ ] Lint output formats
   - [ ] Pretty human readable
-  - [ ] Json (AI / downstream readable)
+  - [x] Json (AI / downstream readable)
   - [ ] GitHub workflow PR annotations
 
 ## Ideas
