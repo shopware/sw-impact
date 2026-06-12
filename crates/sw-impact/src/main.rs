@@ -8,7 +8,7 @@ use sw_impact_scanner::{
 };
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
-use crate::output::OutputFormat;
+use crate::output::{OutputFormat, ReportDiagnosticExt};
 
 mod output;
 
@@ -73,8 +73,7 @@ fn main() {
             let new_surface = scan_dir(&args.path).unwrap();
 
             let report = Report::build_report(&surface_index, &new_surface);
-            // TODO: implement proper output, respecting args.format
-            eprintln!("report:\n{:#?}", report);
+            report.output_diagnostics(args.format);
         }
     }
 }

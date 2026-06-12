@@ -1,6 +1,11 @@
 use std::fmt::Display;
 
 use clap::ValueEnum;
+use sw_impact_scanner::report::Report;
+
+mod github;
+mod human;
+mod json;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum OutputFormat {
@@ -18,6 +23,20 @@ impl Display for OutputFormat {
             OutputFormat::Human => write!(f, "human"),
             OutputFormat::Github => write!(f, "github"),
             OutputFormat::Json => write!(f, "json"),
+        }
+    }
+}
+
+pub trait ReportDiagnosticExt {
+    fn output_diagnostics(&self, format: OutputFormat);
+}
+
+impl ReportDiagnosticExt for Report {
+    fn output_diagnostics(&self, format: OutputFormat) {
+        match format {
+            OutputFormat::Human => human::output_human(self),
+            OutputFormat::Github => github::output_github(self),
+            OutputFormat::Json => json::output_json(self),
         }
     }
 }
