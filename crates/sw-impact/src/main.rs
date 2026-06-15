@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Args, Parser, Subcommand};
 use sw_impact_scanner::{
@@ -55,7 +55,7 @@ pub struct CheckArgs {
     pub format: OutputFormat,
 }
 
-fn main() {
+fn main() -> ExitCode {
     setup_tracing_subscriber();
 
     let cli = Cli::parse();
@@ -64,8 +64,14 @@ fn main() {
     match cli.command {
         Commands::Index(args) => {
             let surface_index = scan_dir(&args.path).unwrap();
+            if surface_index.is_empty() {
+                eprintln!("no public api surfaces found");
+                return ExitCode::FAILURE;
+            }
+
             save_surface_map(&surface_index, &args.index).unwrap();
             eprintln!("saved index with {} api surfaces", surface_index.len());
+            ExitCode::SUCCESS
         }
         Commands::Check(args) => {
             let surface_index = load_surface_map(&args.index).unwrap();
@@ -73,7 +79,14 @@ fn main() {
             let new_surface = scan_dir(&args.path).unwrap();
 
             let report = Report::build_report(&surface_index, &new_surface);
+
+            if !report.contains_breaks() {
+                eprintln!("no public api breaking changes found");
+                return ExitCode::SUCCESS;
+            }
+
             report.output_diagnostics(args.format);
+            ExitCode::FAILURE
         }
     }
 }
