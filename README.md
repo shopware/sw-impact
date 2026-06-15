@@ -68,11 +68,10 @@ Checkmarked means implemented.
   - [ ] block existence
 - [ ] Storefront Twig templates
   - [ ] block existence
-- [ ] (optional) PHP code (currently aleady covered by [Roave/BackwardCompatibilityCheck](https://github.com/Roave/BackwardCompatibilityCheck))
-- [ ] Lint output formats
-  - [ ] Pretty human readable
+- [x] Lint output formats
+  - [x] Pretty human readable
   - [x] Json (AI / downstream readable)
-  - [ ] GitHub workflow PR annotations
+  - [x] GitHub workflow PR annotations
 
 ## Ideas
 
@@ -82,8 +81,9 @@ That might or might not be implemented at some point:
 - [ ] `sw-impact inspect` command, to inspect the tree-sitter syntax tree of a given file
 - [ ] further breaking change check ideas, also looking at our [Backward Compatibility](https://developer.shopware.com/docs/resources/guidelines/code/backward-compatibility.html#backward-compatibility)
       guidelines.
-  - [ ] HTTP API schemas
   - [ ] Entity definitions
+  - [ ] (optional) HTTP API schemas (currently already covered by [Explore OpenAPI GH App](https://github.com/apps/explore-openapi))
+  - [ ] (optional) PHP code (currently aleady covered by [Roave/BackwardCompatibilityCheck](https://github.com/Roave/BackwardCompatibilityCheck))
 
 ## Development tips
 
