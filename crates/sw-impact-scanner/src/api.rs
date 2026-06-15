@@ -18,7 +18,7 @@ pub type SurfaceMap = HashMap<String, Surface>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Surface {
     pub file_path: PathBuf,
-    pub source_range: SourceRange,
+    pub source_token: SourceToken,
     pub fqn: String,
     pub signature: Signature,
 }
@@ -32,7 +32,7 @@ impl Surface {
 #[derive(Debug, Default)]
 pub struct SurfaceBuilder {
     file_path: Option<PathBuf>,
-    source_range: Option<SourceRange>,
+    source_token: Option<SourceToken>,
     fqn: Option<String>,
     signature: Option<Signature>,
 }
@@ -45,7 +45,7 @@ impl SurfaceBuilder {
     pub fn build(self) -> Result<Surface, &'static str> {
         Ok(Surface {
             file_path: self.file_path.ok_or("file_path required")?,
-            source_range: self.source_range.ok_or("source_range required")?,
+            source_token: self.source_token.ok_or("source_token required")?,
             fqn: self.fqn.ok_or("fqn required")?,
             signature: self.signature.unwrap_or(Signature::None),
         })
@@ -56,8 +56,8 @@ impl SurfaceBuilder {
         self
     }
 
-    pub fn source_range(mut self, source_range: impl Into<SourceRange>) -> Self {
-        self.source_range = Some(source_range.into());
+    pub fn source_token(mut self, source_token: impl Into<SourceToken>) -> Self {
+        self.source_token = Some(source_token.into());
         self
     }
 
@@ -164,6 +164,15 @@ impl SourceToken {
         Self {
             text_normalized: Self::normalize_ws(node.utf8_text(src).unwrap()),
             source_range: node.range().into(),
+        }
+    }
+
+    pub fn from_range_source(range: tree_sitter::Range, src: &[u8]) -> Self {
+        Self {
+            text_normalized: Self::normalize_ws(
+                str::from_utf8(&src[range.start_byte..range.end_byte]).unwrap(),
+            ),
+            source_range: range.into(),
         }
     }
 

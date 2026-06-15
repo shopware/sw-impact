@@ -19,10 +19,10 @@ pub struct Report {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SignatureChange {
-    pub surface: Surface,
+    pub base_surface: Surface,
     pub kind: SignatureChangeKind,
     pub old: Option<SourceToken>,
-    pub new: Option<SourceToken>,
+    pub new: SourceToken,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -97,38 +97,43 @@ impl Report {
         match (&base.signature, &new.signature) {
             (Signature::None, Signature::None) => {}
             (Signature::TsMethod(base_method), Signature::TsMethod(new_method)) => {
-                self.diff_ts_method(new, base_method, new_method)
+                self.diff_ts_method(base, base_method, new, new_method)
             }
             (Signature::VueProp(base_prop), Signature::VueProp(new_prop)) => {
-                self.diff_vue_prop(new, base_prop, new_prop)
+                self.diff_vue_prop(base, base_prop, new, new_prop)
             }
             _ => unreachable!("signatures are asserted to always be the same for the same FQN"),
         }
     }
 
-    fn diff_ts_method(&mut self, surface: &Surface, base: &TsMethod, new: &TsMethod) {
+    fn diff_ts_method(
+        &mut self,
+        base_surface: &Surface,
+        base: &TsMethod,
+        new_surface: &Surface,
+        new: &TsMethod,
+    ) {
         if base.r#async != new.r#async {
             self.breaking_changes.push(SignatureChange {
-                surface: surface.clone(),
+                base_surface: base_surface.clone(),
                 kind: SignatureChangeKind::TsMethodAsyncChanged,
                 old: base.r#async.clone(),
-                new: new.r#async.clone(),
+                new: match &new.r#async {
+                    Some(t) => t.clone(),
+                    None => new_surface.source_token.clone(),
+                },
             });
         }
 
         if base.return_type != new.return_type {
             self.breaking_changes.push(SignatureChange {
-                surface: surface.clone(),
+                base_surface: base_surface.clone(),
                 kind: SignatureChangeKind::TsMethodReturnTypeChanged,
                 old: base.return_type.clone(),
-                new: new.return_type.clone(),
-                // TODO: fix these to always provide new SourceToken
-                /*
-                    new: match &new.return_type {
-                        Some(t) => Some(t.clone()),
-                        None => Some(surface.source_range.clone()),
-                    },
-                */
+                new: match &new.return_type {
+                    Some(t) => t.clone(),
+                    None => new_surface.source_token.clone(),
+                },
             });
 
             return;
@@ -138,36 +143,36 @@ impl Report {
         for (base_param, new_param) in base.parameters.iter().zip(new.parameters.iter()) {
             if base_param.optional != new_param.optional && new_param.default_value.is_none() {
                 self.breaking_changes.push(SignatureChange {
-                    surface: surface.clone(),
+                    base_surface: base_surface.clone(),
                     kind: SignatureChangeKind::TsMethodParamBecameRequired,
                     old: base_param.optional.clone(),
                     new: match &new_param.optional {
-                        Some(t) => Some(t.clone()),
-                        None => Some(new_param.name.clone()),
+                        Some(t) => t.clone(),
+                        None => new_param.name.clone(),
                     },
                 });
             }
 
             if base_param.type_annotation != new_param.type_annotation {
                 self.breaking_changes.push(SignatureChange {
-                    surface: surface.clone(),
+                    base_surface: base_surface.clone(),
                     kind: SignatureChangeKind::TsMethodParamTypeChanged,
                     old: base_param.type_annotation.clone(),
                     new: match &new_param.type_annotation {
-                        Some(t) => Some(t.clone()),
-                        None => Some(new_param.name.clone()),
+                        Some(t) => t.clone(),
+                        None => new_param.name.clone(),
                     },
                 });
             }
 
             if base_param.rest != new_param.rest {
                 self.breaking_changes.push(SignatureChange {
-                    surface: surface.clone(),
+                    base_surface: base_surface.clone(),
                     kind: SignatureChangeKind::TsMethodParamRestChanged,
                     old: base_param.rest.clone(),
                     new: match &new_param.rest {
-                        Some(t) => Some(t.clone()),
-                        None => Some(new_param.name.clone()),
+                        Some(t) => t.clone(),
+                        None => new_param.name.clone(),
                     },
                 });
             }
@@ -179,10 +184,10 @@ impl Report {
 
             if param.optional.is_none() && param.default_value.is_none() {
                 self.breaking_changes.push(SignatureChange {
-                    surface: surface.clone(),
+                    base_surface: base_surface.clone(),
                     kind: SignatureChangeKind::TsMethodRequiredParamAdded,
                     old: None,
-                    new: Some(param.name.clone()),
+                    new: param.name.clone(),
                 });
             }
         }
@@ -192,15 +197,21 @@ impl Report {
             let param = &base.parameters[i];
 
             self.breaking_changes.push(SignatureChange {
-                surface: surface.clone(),
+                base_surface: base_surface.clone(),
                 kind: SignatureChangeKind::TsMethodParamRemoved,
                 old: Some(param.name.clone()),
-                new: None, // TODO: fix, always provide new SourceToken
+                new: new_surface.source_token.clone(),
             });
         }
     }
 
-    fn diff_vue_prop(&mut self, surface: &Surface, base: &VueProp, new: &VueProp) {
+    fn diff_vue_prop(
+        &mut self,
+        base_surface: &Surface,
+        base: &VueProp,
+        new_surface: &Surface,
+        new: &VueProp,
+    ) {
         // TODO: implement me
     }
 }

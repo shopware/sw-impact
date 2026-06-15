@@ -1,7 +1,6 @@
 use std::{path::Path, sync::LazyLock};
-
 use tracing::{error, info, warn};
-use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator};
+use tree_sitter::{Language, Node, Parser, Query, QueryCursor, Range, StreamingIterator};
 
 use crate::api::{SourceToken, Surface, SurfaceCollector, TsMethod, TsParam, VueProp};
 
@@ -90,7 +89,10 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
                 collector.push(
                     Surface::builder()
                         .file_path(path.to_owned())
-                        .source_range(method_name.range())
+                        .source_token(SourceToken::from_range_source(
+                            method_signature_range(c.node),
+                            src,
+                        ))
                         .signature(TsMethod {
                             r#async: r#async.map(|n| SourceToken::from_node_source(n, src)),
                             parameters: extract_ts_method_params(&fqn, params, src),
@@ -112,7 +114,7 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
                 collector.push(
                     Surface::builder()
                         .file_path(path.to_owned())
-                        .source_range(key.range())
+                        .source_token(SourceToken::from_node_source(key, src))
                         .fqn(format!(
                             "vue.{}.{}.{}",
                             component_name,
@@ -133,7 +135,7 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
             collector.push(
                 Surface::builder()
                     .file_path(path.to_owned())
-                    .source_range(c.node.range())
+                    .source_token(SourceToken::from_node_source(c.node, src))
                     .fqn(format!(
                         "vue.{}.{}.{}",
                         component_name,
@@ -163,7 +165,7 @@ struct VueFile<'a> {
 }
 
 /// Returns the TS / JS object defining the vue component with options api
-/// If it exists or nothing if the component is declared as @private in a comment
+/// If it exists or nothing if the component is declared as @private / @experimental in a comment
 fn scan_file_top_level<'a>(root: Node<'a>, src: &[u8], path: &Path) -> VueFile<'a> {
     let mut cursor = QueryCursor::new();
     let matches = cursor.matches(&QUERY_FILE, root, src);
@@ -186,7 +188,7 @@ fn scan_file_top_level<'a>(root: Node<'a>, src: &[u8], path: &Path) -> VueFile<'
             if *capture_name == "toplevel.comment" {
                 let text = c.node.utf8_text(src).unwrap();
 
-                if text.contains("@private") {
+                if text.contains("@private") || text.contains("@experimental") {
                     vue_file.is_private = true;
                 }
                 continue;
@@ -210,6 +212,24 @@ fn scan_file_top_level<'a>(root: Node<'a>, src: &[u8], path: &Path) -> VueFile<'
     }
 
     vue_file
+}
+
+fn method_signature_range(method: Node) -> Range {
+    let method_range = method.range();
+    let mut end_byte = method_range.end_byte;
+    let mut end_point = method_range.end_point;
+    if let Some(body) = method.child_by_field_name("body") {
+        let body_range = body.range();
+        end_byte = body_range.start_byte;
+        end_point = body_range.start_point;
+    }
+
+    Range {
+        start_byte: method_range.start_byte,
+        end_byte,
+        start_point: method_range.start_point,
+        end_point,
+    }
 }
 
 fn extract_ts_method_params(fqn: &str, n: Node, src: &[u8]) -> Vec<TsParam> {

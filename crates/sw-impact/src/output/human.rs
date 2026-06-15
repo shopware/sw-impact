@@ -18,20 +18,24 @@ pub fn output_human(report: &DataReport) {
             ReportKind::Error,
             (
                 &file_id,
-                surface.source_range.start_byte..surface.source_range.end_byte,
+                surface.source_token.source_range.start_byte
+                    ..surface.source_token.source_range.end_byte,
             ),
         )
         .with_code("api:removed")
         .with_message("Removed public API surface")
+        .with_help(format!(
+            "old signature was: {}",
+            surface.source_token.text_normalized
+        ))
         .with_note(format!("API surface: {}", surface.fqn))
         .with_label(
-            // TODO: this label is kind of broken, pointing to the new file source but on something that
-            // doesn't exist anymore
             Label::new((
                 &file_id,
-                surface.source_range.start_byte..surface.source_range.start_byte,
+                surface.source_token.source_range.start_byte
+                    ..surface.source_token.source_range.start_byte,
             ))
-            .with_message("Previously was defined on this line"),
+            .with_message("was previously defined in this line"),
         )
         .finish()
         .print((&file_id, Source::from(source)))
@@ -39,7 +43,7 @@ pub fn output_human(report: &DataReport) {
     }
 
     for signature_change in &report.breaking_changes {
-        let file = signature_change.surface.file_path.as_path();
+        let file = signature_change.base_surface.file_path.as_path();
         let file_id = file.display().to_string();
         let source = source_cache.get(file);
 
@@ -47,40 +51,69 @@ pub fn output_human(report: &DataReport) {
             ReportKind::Error,
             (
                 &file_id,
-                signature_change.surface.source_range.start_byte
-                    ..signature_change.surface.source_range.end_byte,
+                signature_change
+                    .base_surface
+                    .source_token
+                    .source_range
+                    .start_byte
+                    ..signature_change
+                        .base_surface
+                        .source_token
+                        .source_range
+                        .end_byte,
             ),
         )
-        .with_code(format!("api:break:{}", signature_change.kind))
+        .with_code(signature_change.kind)
         .with_message("Potential breaking change on public API surface")
-        .with_note(format!("API surface: {}", signature_change.surface.fqn));
+        .with_help(format!(
+            "old signature was: {}",
+            signature_change.base_surface.source_token.text_normalized
+        ))
+        .with_note(format!(
+            "API surface: {}",
+            signature_change.base_surface.fqn
+        ));
 
         if let Some(t) = &signature_change.old {
-            report = report.with_note(format!("old: {}", &t.text_normalized));
+            report = report.with_note(format!("before: {}", &t.text_normalized));
         }
-        if let Some(t) = &signature_change.new {
-            report = report.with_label(
-                Label::new((&file_id, t.source_range.start_byte..t.source_range.end_byte))
-                    .with_message("new implementation TODO: details"),
-            );
+        let old_text = signature_change
+            .old
+            .as_ref()
+            .map(|t| t.text_normalized.as_str())
+            .unwrap_or("");
 
-            report = report.with_note(format!("new: {}", &t.text_normalized));
-        } else {
-            // always add a label
-            report = report.with_label(Label::new((&file_id, 0..0)).with_message("In this place"));
-        }
-
-        /*
-                let label = match signature_change.kind {
-                    sw_impact_scanner::report::SignatureChangeKind::TsMethodParamRemoved => todo!(),
-                    sw_impact_scanner::report::SignatureChangeKind::TsMethodParamTypeChanged => todo!(),
-                    sw_impact_scanner::report::SignatureChangeKind::TsMethodParamRestChanged => todo!(),
-                    sw_impact_scanner::report::SignatureChangeKind::TsMethodParamBecameRequired => todo!(),
-                    sw_impact_scanner::report::SignatureChangeKind::TsMethodRequiredParamAdded => todo!(),
-                    sw_impact_scanner::report::SignatureChangeKind::TsMethodReturnTypeChanged => todo!(),
-                    sw_impact_scanner::report::SignatureChangeKind::TsMethodAsyncChanged => todo!(),
-                };
-        */
+        let label = match signature_change.kind {
+            sw_impact_scanner::report::SignatureChangeKind::TsMethodParamRemoved => {
+                "parameter removed"
+            }
+            sw_impact_scanner::report::SignatureChangeKind::TsMethodParamTypeChanged => &format!(
+                "parameter type changed from '{}' to '{}'",
+                old_text, &signature_change.new.text_normalized
+            ),
+            sw_impact_scanner::report::SignatureChangeKind::TsMethodParamRestChanged => {
+                "parameter ...rest changed"
+            }
+            sw_impact_scanner::report::SignatureChangeKind::TsMethodParamBecameRequired => {
+                "parameter became required"
+            }
+            sw_impact_scanner::report::SignatureChangeKind::TsMethodRequiredParamAdded => {
+                "required parameter added"
+            }
+            sw_impact_scanner::report::SignatureChangeKind::TsMethodReturnTypeChanged => &format!(
+                "return type changed from '{}' to '{}'",
+                old_text, &signature_change.new.text_normalized
+            ),
+            sw_impact_scanner::report::SignatureChangeKind::TsMethodAsyncChanged => "async changed",
+        };
+        report = report.with_label(
+            Label::new((
+                &file_id,
+                signature_change.new.source_range.start_byte
+                    ..signature_change.new.source_range.end_byte,
+            ))
+            .with_message(label),
+        );
 
         report
             .finish()

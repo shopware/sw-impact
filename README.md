@@ -50,7 +50,7 @@ Some design decisions to keep things simple:
 
 Checkmarked means implemented.
 
-- [ ] Admin Vue.js components (not marked `@private` top level comment)
+- [ ] Admin Vue.js components (not marked `@private` or `@experimental` in top level comment)
   - [x] Component existence under their approximated registered name, either by:
     - `import template from './sw-model-editor.html.twig';`, using the last `.html.twig` import that is in the same directory
     - fallback to extract from the file path parent folder (mostly followed convention in commerce core)
