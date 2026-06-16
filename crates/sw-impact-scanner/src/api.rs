@@ -100,7 +100,8 @@ pub struct TsMethod {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VueProp {
-    pub definition: SourceToken, // TODO: proper parsing
+    pub type_annotation: Option<SourceToken>,
+    pub required: Option<SourceToken>,
 }
 
 /// Typescript / Javascript function declaration parameter

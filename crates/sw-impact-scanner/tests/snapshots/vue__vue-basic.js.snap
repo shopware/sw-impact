@@ -1,0 +1,91 @@
+---
+source: crates/sw-impact-scanner/tests/vue.rs
+description: "import template from './basic-vue.html.twig';\n\nexport default {\n    template,\n\n    emits: [\n        'block-duplicate',\n        'block-delete',\n    ],\n\n    props: {\n        block: {\n            type: Object,\n            required: true,\n        },\n\n        removable: {\n            type: Boolean,\n            required: false,\n            default() {\n                return false;\n            },\n        },\n\n        duplicable: {\n            type: Boolean,\n            required: false,\n            default() {\n                return true;\n            },\n        },\n    },\n\n    computed: {\n        isLoading() {\n            return this.block !== null;\n        },\n    },\n\n    methods: {\n        onBlockDuplicate() {\n            this.$emit('block-duplicate', this.block);\n        },\n\n        onBlockDelete() {\n            this.$emit('block-delete', this.block);\n        },\n    },\n};\n"
+---
+vue.basic-vue.computed.isLoading:
+  file_path: tests/fixtures/vue-basic.js
+  source_token:
+    text_normalized: isLoading()
+    source_range:
+      start_byte: 594
+      end_byte: 606
+      start_point:
+        row: 34
+        column: 8
+      end_point:
+        row: 34
+        column: 20
+  fqn: vue.basic-vue.computed.isLoading
+  signature:
+    TsMethod:
+      async: ~
+      parameters: []
+      return_type: ~
+vue.basic-vue.emit.block-delete:
+  file_path: tests/fixtures/vue-basic.js
+  source_token:
+    text_normalized: block-delete
+    source_range:
+      start_byte: 128
+      end_byte: 140
+      start_point:
+        row: 7
+        column: 9
+      end_point:
+        row: 7
+        column: 21
+  fqn: vue.basic-vue.emit.block-delete
+  signature: None
+vue.basic-vue.emit.block-duplicate:
+  file_path: tests/fixtures/vue-basic.js
+  source_token:
+    text_normalized: block-duplicate
+    source_range:
+      start_byte: 101
+      end_byte: 116
+      start_point:
+        row: 6
+        column: 9
+      end_point:
+        row: 6
+        column: 24
+  fqn: vue.basic-vue.emit.block-duplicate
+  signature: None
+vue.basic-vue.method.onBlockDelete:
+  file_path: tests/fixtures/vue-basic.js
+  source_token:
+    text_normalized: onBlockDelete()
+    source_range:
+      start_byte: 786
+      end_byte: 802
+      start_point:
+        row: 44
+        column: 8
+      end_point:
+        row: 44
+        column: 24
+  fqn: vue.basic-vue.method.onBlockDelete
+  signature:
+    TsMethod:
+      async: ~
+      parameters: []
+      return_type: ~
+vue.basic-vue.method.onBlockDuplicate:
+  file_path: tests/fixtures/vue-basic.js
+  source_token:
+    text_normalized: onBlockDuplicate()
+    source_range:
+      start_byte: 690
+      end_byte: 709
+      start_point:
+        row: 40
+        column: 8
+      end_point:
+        row: 40
+        column: 27
+  fqn: vue.basic-vue.method.onBlockDuplicate
+  signature:
+    TsMethod:
+      async: ~
+      parameters: []
+      return_type: ~

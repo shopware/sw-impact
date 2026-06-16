@@ -30,13 +30,17 @@ pub fn validate_queries() {
 }
 
 pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
+    let file_content = std::fs::read_to_string(path).unwrap();
+    let src = file_content.as_bytes();
+
+    process_vue(path, src, collector);
+}
+
+pub fn process_vue(path: &Path, src: &[u8], collector: &SurfaceCollector) {
     let lang: &Language = &tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
 
     let mut parser = Parser::new();
     parser.set_language(lang).unwrap();
-
-    let file_content = std::fs::read_to_string(path).unwrap();
-    let src = file_content.as_bytes();
 
     let tree = parser.parse(src, None).unwrap();
     let root = tree.root_node();
@@ -107,27 +111,74 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
                 continue;
             }
 
-            if c.node.kind() == "pair" && *capture_name == "prop" {
-                let key = c.node.child_by_field_name("key").unwrap();
-                let value = c.node.child_by_field_name("value").unwrap();
+            if *capture_name == "props.value" {
+                match c.node.kind() {
+                    "array" => {
+                        let mut cursor = c.node.walk();
 
-                collector.push(
-                    Surface::builder()
-                        .file_path(path.to_owned())
-                        .source_token(SourceToken::from_node_source(key, src))
-                        .fqn(format!(
-                            "vue.{}.{}.{}",
-                            component_name,
-                            capture_name,
-                            key.utf8_text(src).unwrap()
-                        ))
-                        .signature(VueProp {
-                            definition: SourceToken::from_node_source(value, src),
-                        })
-                        .build()
-                        .unwrap(),
-                );
-                surface_count += 1;
+                        for child in c.node.named_children(&mut cursor) {
+                            if child.kind() == "string" {
+                                if let Some(prop_name) = string_value(child, src) {
+                                    collector.push(
+                                        Surface::builder()
+                                            .file_path(path.to_owned())
+                                            .source_token(SourceToken::from_node_source(child, src))
+                                            .fqn(format!(
+                                                "vue.{}.prop.{}",
+                                                component_name, &prop_name
+                                            ))
+                                            .signature(VueProp {
+                                                type_annotation: None,
+                                                required: None,
+                                            })
+                                            .build()
+                                            .unwrap(),
+                                    );
+                                    surface_count += 1;
+                                }
+                            }
+                        }
+                    }
+                    "object" => {
+                        let mut cursor = c.node.walk();
+
+                        for child in c.node.named_children(&mut cursor) {
+                            if child.kind() != "pair" {
+                                continue;
+                            }
+
+                            let Some(key_node) = child.child_by_field_name("key") else {
+                                continue;
+                            };
+
+                            let Some(value_node) = child.child_by_field_name("value") else {
+                                continue;
+                            };
+
+                            if let Some(prop_def) = parse_prop_definition(value_node, src) {
+                                let prop_name = key_node.utf8_text(src).unwrap();
+                                collector.push(
+                                    Surface::builder()
+                                        .file_path(path.to_owned())
+                                        .source_token(SourceToken::from_node_source(key_node, src))
+                                        .fqn(format!("vue.{}.prop.{}", component_name, prop_name))
+                                        .signature(prop_def)
+                                        .build()
+                                        .unwrap(),
+                                );
+                                surface_count += 1;
+                            }
+                        }
+                    }
+                    k => {
+                        error!(
+                            "failed to parse vue prop declaration of kind {} in {} with text: {}",
+                            k,
+                            path.display(),
+                            c.node.utf8_text(src).unwrap()
+                        );
+                    }
+                }
 
                 continue;
             }
@@ -156,6 +207,36 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
             component_name
         );
     }
+}
+
+fn parse_prop_definition(value_node: Node, src: &[u8], path: &Path) -> Option<VueProp> {
+    return match value_node.kind() {
+        // title: String
+        "identifier" => Some(VueProp {
+            type_annotation: Some(SourceToken::from_node_source(value_node, src)),
+            required: None,
+        }),
+        // input: [Number, String]
+        "array" => Some(VueProp {
+            type_annotation: Some(SourceToken::from_node_source(value_node, src)),
+            required: None,
+        }),
+        // count: { type: Number, required: true }
+        // msg: { type: [String, Number] }
+        "object" => {
+            // TODO: implement me
+            None
+        }
+        k => {
+            error!(
+                "failed to parse vue prop declaration of kind {} in {} with text: {}",
+                k,
+                path.display(),
+                value_node.utf8_text(src).unwrap()
+            );
+            None
+        }
+    };
 }
 
 struct VueFile<'a> {
@@ -296,6 +377,34 @@ fn ts_param_from_tree_sitter(fqn: &str, param: Node, src: &[u8]) -> Option<TsPar
             None
         }
     }
+}
+
+fn string_value(node: Node, src: &[u8]) -> Option<String> {
+    // tree could look like this
+    // string
+    //   string_fragment
+    //   escape_sequence
+    //   string_fragment
+
+    let mut cursor = node.walk();
+    let mut value = String::with_capacity(node.end_byte() - node.start_byte());
+
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "string_fragment" => {
+                value.push_str(child.utf8_text(src).ok()?);
+            }
+
+            // keep escape codes as raw text for now
+            "escape_sequence" => {
+                value.push_str(child.utf8_text(src).ok()?);
+            }
+
+            _ => {}
+        }
+    }
+
+    Some(value)
 }
 
 fn extract_component_name_from_template(s: &str) -> Option<String> {

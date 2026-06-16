@@ -17,9 +17,8 @@
 (object
   (pair
     key: (property_identifier) @_vue.props
-    value: (object 
-             (pair) @prop
-           )
+    value: (_ 
+           ) @props.value
     (#eq? @_vue.props "props")
   )
 )
