@@ -1,6 +1,7 @@
 # sw-impact
 
-Breaking change and public (extension) API static analyzer CLI tool, purpose build for Shopware.
+Breaking change and public (extension) API static analyzer CLI tool, purpose-built for Shopware commerce core developers.
+Intended to be run in the [Shopware](https://github.com/shopware/shopware) repository CI workflows to prevent introducing breaking changes by accident.
 
 > [!NOTE]
 > Very much WIP and in a rewrite right now, to build things properly and start with vision part 1.
@@ -31,10 +32,10 @@ In general run `sw-impact --help` for latest CLI use instructions.
 ## Vision
 
 1. Detect and flag any (possible) breaking change to the public (extension) API that the Shopware commerce core exposes
-2. (Optional) show (possible) impact evidence based on real extensions using the API,
+2. (Optional) show (possible) impact evidence based on real extensions using the API surface,
    utilizing the source code of all extensions published in our own extension store.
 
-## Contraints
+## Constraints
 
 Some design decisions to keep things simple:
 
@@ -54,7 +55,7 @@ Checkmarked means implemented.
   - [x] Component existence under their approximated registered name, either by:
     - `import template from './sw-model-editor.html.twig';`, using the last `.html.twig` import that is in the same directory
     - fallback to extract from the file path parent folder (mostly followed convention in commerce core)
-  - [x] Emit event names existience
+  - [x] Emit event names existence
   - [x] Computed
     - [x] existence
     - [x] signature breaks (return type)
@@ -70,7 +71,7 @@ Checkmarked means implemented.
   - [ ] block existence
 - [x] Lint output formats
   - [x] Pretty human readable
-  - [x] Json (AI / downstream readable)
+  - [x] JSON (AI / downstream readable)
   - [x] GitHub workflow PR annotations
 
 ## Ideas
@@ -83,14 +84,14 @@ That might or might not be implemented at some point:
       guidelines.
   - [ ] Entity definitions
   - [ ] (optional) HTTP API schemas (currently already covered by [Explore OpenAPI GH App](https://github.com/apps/explore-openapi))
-  - [ ] (optional) PHP code (currently aleady covered by [Roave/BackwardCompatibilityCheck](https://github.com/Roave/BackwardCompatibilityCheck))
+  - [ ] (optional) PHP code (currently already covered by [Roave/BackwardCompatibilityCheck](https://github.com/Roave/BackwardCompatibilityCheck))
 
 ## Development tips
 
 Basics (if you are new to Rust):
 - Tests can be executed with `cargo test`
 - Linter can be executed with `cargo clippy`
-- Formatter can be exectued with `cargo fmt`
+- Formatter can be executed with `cargo fmt`
 - For iterating on changes, you can also execute e.g. `cargo run --release -- check ../shopware`
 
 Advanced:
@@ -99,3 +100,6 @@ Advanced:
   - You can experiment with their [playground](https://tree-sitter.github.io/tree-sitter/7-playground.html)
   - Or in Neovim, run `:InspectTree`, you can open the a query editor by pressing `o`
 
+## License
+
+[MIT License](LICENSE)
