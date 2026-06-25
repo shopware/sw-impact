@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, path::Path};
 
 use clap::ValueEnum;
 use sw_impact_scanner::report::Report;
@@ -28,13 +28,13 @@ impl Display for OutputFormat {
 }
 
 pub trait ReportDiagnosticExt {
-    fn output_diagnostics(&self, format: OutputFormat);
+    fn output_diagnostics(&self, format: OutputFormat, source_root: &Path);
 }
 
 impl ReportDiagnosticExt for Report {
-    fn output_diagnostics(&self, format: OutputFormat) {
+    fn output_diagnostics(&self, format: OutputFormat, source_root: &Path) {
         match format {
-            OutputFormat::Human => human::output_human(self),
+            OutputFormat::Human => human::output_human(self, source_root),
             OutputFormat::Github => github::output_github(self),
             OutputFormat::Json => json::output_json(self),
         }

@@ -1,4 +1,5 @@
 use std::{
+    fs,
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -14,7 +15,10 @@ use crate::{
 };
 
 #[derive(Debug, Error)]
-pub enum ScanError {}
+pub enum ScanError {
+    #[error("given path `{0}` is not detected as a Shopware root directory")]
+    InvalidShopwareRoot(PathBuf),
+}
 
 pub mod api;
 pub mod report;
@@ -26,12 +30,16 @@ pub fn validate_queries() {
 
 pub fn scan_dir(path: &Path) -> Result<SurfaceMap, ScanError> {
     validate_queries();
+    let shopware_root = validate_shopware_root(path)?;
     let collector = SurfaceCollector::new();
 
-    let files = collect_files(path);
+    let files = collect_files(&shopware_root);
 
     files.par_iter().for_each(|path| {
-        process_file(path, &collector);
+        let repo_path = path
+            .strip_prefix(&shopware_root)
+            .expect("walked files should be inside the Shopware root");
+        process_file(path, repo_path, &collector);
     });
 
     let surface_map = collector.finish();
@@ -41,12 +49,28 @@ pub fn scan_dir(path: &Path) -> Result<SurfaceMap, ScanError> {
     Ok(surface_map)
 }
 
-fn process_file(path: &Path, collector: &SurfaceCollector) {
+fn validate_shopware_root(path: &Path) -> Result<PathBuf, ScanError> {
+    let shopware_root = path
+        .canonicalize()
+        .map_err(|_| ScanError::InvalidShopwareRoot(path.to_path_buf()))?;
+    let composer_json = fs::read_to_string(shopware_root.join("composer.json"))
+        .map_err(|_| ScanError::InvalidShopwareRoot(path.to_path_buf()))?;
+    let composer_json: serde_json::Value = serde_json::from_str(&composer_json)
+        .map_err(|_| ScanError::InvalidShopwareRoot(path.to_path_buf()))?;
+
+    if composer_json.get("name").and_then(|name| name.as_str()) != Some("shopware/platform") {
+        return Err(ScanError::InvalidShopwareRoot(path.to_path_buf()));
+    }
+
+    Ok(shopware_root)
+}
+
+fn process_file(path: &Path, repo_path: &Path, collector: &SurfaceCollector) {
     let file_ext = path.extension().and_then(|e| e.to_str());
     match file_ext {
         Some("js") | Some("ts") => {
-            if is_administration_path(path) {
-                process_file_vue(path, collector)
+            if is_administration_path(repo_path) {
+                process_file_vue(path, repo_path, collector)
             } else {
                 // TODO: storefront
             }

@@ -29,7 +29,7 @@ pub fn validate_queries() {
     let _ = &*QUERY_OBJ;
 }
 
-pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
+pub fn process_file_vue(path: &Path, repo_path: &Path, collector: &SurfaceCollector) {
     let lang: &Language = &tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
 
     let mut parser = Parser::new();
@@ -41,7 +41,7 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
     let tree = parser.parse(src, None).unwrap();
     let root = tree.root_node();
 
-    let vue_file = scan_file_top_level(root, src, path);
+    let vue_file = scan_file_top_level(root, src, repo_path);
     let Some(obj) = vue_file.options_obj else {
         info!("skipping (no vue component): {}", path.display());
         return;
@@ -88,7 +88,7 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
 
                 collector.push(
                     Surface::builder()
-                        .file_path(path.to_owned())
+                        .file_path(repo_path.to_owned())
                         .source_token(SourceToken::from_range_source(
                             method_signature_range(c.node),
                             src,
@@ -113,7 +113,7 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
 
                 collector.push(
                     Surface::builder()
-                        .file_path(path.to_owned())
+                        .file_path(repo_path.to_owned())
                         .source_token(SourceToken::from_node_source(key, src))
                         .fqn(format!(
                             "vue.{}.{}.{}",
@@ -134,7 +134,7 @@ pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
 
             collector.push(
                 Surface::builder()
-                    .file_path(path.to_owned())
+                    .file_path(repo_path.to_owned())
                     .source_token(SourceToken::from_node_source(c.node, src))
                     .fqn(format!(
                         "vue.{}.{}.{}",
