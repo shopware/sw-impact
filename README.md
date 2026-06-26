@@ -46,12 +46,13 @@ Some design decisions to keep things simple:
   reuse the tree-sitter queries
 - Overall try to keep the codebase minimal and performant, it doesn't have to cover
   every edge case, especially if it doesn't exists in Shopware's commerce core right now
+  - for example only support Vue options API for now, because composition API isn't really used in the core (yet)
 
 ## Features
 
 Checkmarked means implemented.
 
-- [ ] Admin Vue.js components (not marked `@private` or `@experimental` in top level comment)
+- [ ] Admin Vue.js components (not marked `@private` / `@experimental` / `@internal` in top level comment)
   - [x] Component existence under their approximated registered name, either by:
     - `import template from './sw-model-editor.html.twig';`, using the last `.html.twig` import that is in the same directory
     - fallback to extract from the file path parent folder (mostly followed convention in commerce core)
@@ -59,12 +60,14 @@ Checkmarked means implemented.
   - [x] Computed
     - [x] existence
     - [x] signature breaks (return type)
+    - [ ] extended syntax (object with getter / setter)
   - [x] Methods
     - [x] existence
     - [x] signature breaks (arguments, return type, is async)
-  - [ ] Properties
+  - [x] Properties
     - [x] existence
-    - [ ] signature breaks (type, required)
+    - [x] signature breaks (type, required)
+    - [x] added required prop to existing (public) component
 - [ ] Admin Twig templates
   - [ ] block existence
 - [ ] Storefront Twig templates
