@@ -2,6 +2,21 @@
 source: crates/sw-impact-scanner/tests/vue.rs
 description: "import template from './props-array.html.twig';\n\nexport default {\n    template,\n\n    props: ['title', 'count', 'disabled'],\n};\n"
 ---
+vue.props-array:
+  file_path: tests/fixtures/vue-props-array.js
+  source_token:
+    text_normalized: ""
+    source_range:
+      start_byte: 0
+      end_byte: 0
+      start_point:
+        row: 0
+        column: 0
+      end_point:
+        row: 0
+        column: 0
+  fqn: vue.props-array
+  signature: None
 vue.props-array.prop.count:
   file_path: tests/fixtures/vue-props-array.js
   source_token:

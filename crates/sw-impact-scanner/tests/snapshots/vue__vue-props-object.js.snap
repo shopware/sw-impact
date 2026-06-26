@@ -2,6 +2,21 @@
 source: crates/sw-impact-scanner/tests/vue.rs
 description: "import template from './props-object.html.twig';\n\nexport default {\n    template,\n\n    props: {\n        title: String,\n        count: Number,\n        disabled: Boolean,\n        items: Array,\n        user: Object,\n        callback: Function,\n        createdAt: Date,\n\n        special: {\n            type: String,\n            required: true,\n        },\n\n        always: {\n            type: Object,\n            default: () => ({}),\n        },\n\n        multi: [String, Number],\n\n        multiObj: {\n            type: [String, Number],\n        },\n    },\n};\n"
 ---
+vue.props-object:
+  file_path: tests/fixtures/vue-props-object.js
+  source_token:
+    text_normalized: ""
+    source_range:
+      start_byte: 0
+      end_byte: 0
+      start_point:
+        row: 0
+        column: 0
+      end_point:
+        row: 0
+        column: 0
+  fqn: vue.props-object
+  signature: None
 vue.props-object.prop.always:
   file_path: tests/fixtures/vue-props-object.js
   source_token:

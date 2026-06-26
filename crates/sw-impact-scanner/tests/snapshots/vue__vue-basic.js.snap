@@ -2,6 +2,21 @@
 source: crates/sw-impact-scanner/tests/vue.rs
 description: "import template from './basic-vue.html.twig';\n\nexport default {\n    template,\n\n    emits: [\n        'block-duplicate',\n        'block-delete',\n    ],\n\n    props: {\n        block: {\n            type: Object,\n            required: true,\n        },\n\n        removable: {\n            type: Boolean,\n            required: false,\n            default() {\n                return false;\n            },\n        },\n\n        duplicable: {\n            type: Boolean,\n            required: false,\n            default() {\n                return true;\n            },\n        },\n    },\n\n    computed: {\n        isLoading() {\n            return this.block !== null;\n        },\n    },\n\n    methods: {\n        onBlockDuplicate() {\n            this.$emit('block-duplicate', this.block);\n        },\n\n        onBlockDelete() {\n            this.$emit('block-delete', this.block);\n        },\n    },\n};\n"
 ---
+vue.basic-vue:
+  file_path: tests/fixtures/vue-basic.js
+  source_token:
+    text_normalized: ""
+    source_range:
+      start_byte: 0
+      end_byte: 0
+      start_point:
+        row: 0
+        column: 0
+      end_point:
+        row: 0
+        column: 0
+  fqn: vue.basic-vue
+  signature: None
 vue.basic-vue.computed.isLoading:
   file_path: tests/fixtures/vue-basic.js
   source_token:

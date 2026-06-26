@@ -199,13 +199,36 @@ pub fn process_vue(path: &Path, repo_path: &Path, src: &[u8], collector: &Surfac
         }
     });
 
-    if surface_count > 0 && !component_name.starts_with("sw-") {
+    if surface_count == 0 {
+        return; // found object was not a vue component,
+        // as it didn't had any props, computed, methods attributes that could be parsed
+    }
+
+    if !component_name.starts_with("sw-") {
         error!(
             "found surfaces in file {} with detected component name {} that doesn't start with 'sw-'",
             path.display(),
             component_name
         );
     }
+
+    // always add one surface for the (public) vue component itself
+    collector.push(
+        Surface::builder()
+            .file_path(repo_path.to_owned())
+            .source_token(SourceToken::from_range_source(
+                tree_sitter::Range {
+                    start_byte: 0,
+                    end_byte: 0,
+                    start_point: tree_sitter::Point { row: 0, column: 0 },
+                    end_point: tree_sitter::Point { row: 0, column: 0 },
+                },
+                src,
+            ))
+            .fqn(format!("vue.{component_name}"))
+            .build()
+            .unwrap(),
+    );
 }
 
 fn parse_prop_definition(value_node: Node, src: &[u8], path: &Path) -> Option<VueProp> {
