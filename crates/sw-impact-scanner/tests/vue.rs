@@ -10,7 +10,7 @@ fn run_fixture_test(fixture: impl Into<PathBuf>) {
         .expect("fixture filename")
         .to_string_lossy();
     let src = std::fs::read_to_string(&path)
-        .expect(&format!("failed loading fixture {}", path.display()));
+        .unwrap_or_else(|_| panic!("failed loading fixture {}", path.display()));
 
     let collector = SurfaceCollector::new();
     sw_impact_scanner::vue::process_vue(&path, &path, src.as_bytes(), &collector);
