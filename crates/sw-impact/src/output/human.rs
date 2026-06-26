@@ -4,7 +4,7 @@ use std::{
 };
 
 use ariadne::{Label, Report, ReportKind, Source};
-use sw_impact_scanner::report::Report as DataReport;
+use sw_impact_scanner::report::{Report as DataReport, SignatureChangeKind};
 
 pub fn output_human(report: &DataReport, source_root: &Path) {
     let mut source_cache = SourceFileCache::default();
@@ -67,15 +67,22 @@ pub fn output_human(report: &DataReport, source_root: &Path) {
         )
         .with_code(signature_change.kind)
         .with_message("Potential breaking change on public API surface")
-        .with_help(format!(
-            "old signature was: {}",
-            signature_change.base_surface.source_token.text_normalized
-        ))
         .with_note(format!(
             "API surface: {}",
             signature_change.base_surface.fqn
         ));
 
+        if !matches!(
+            signature_change.kind,
+            SignatureChangeKind::VuePropBecameRequired | SignatureChangeKind::VuePropTypeChanged
+        ) {
+            report = report.with_help(format!(
+                "old signature was: {}",
+                signature_change.base_surface.source_token.text_normalized
+            ));
+        }
+
+        let base_surface_text = &signature_change.base_surface.source_token.text_normalized;
         if let Some(t) = &signature_change.old {
             report = report.with_note(format!("before: {}", &t.text_normalized));
         }
@@ -107,6 +114,13 @@ pub fn output_human(report: &DataReport, source_root: &Path) {
                 old_text, &signature_change.new.text_normalized
             ),
             sw_impact_scanner::report::SignatureChangeKind::TsMethodAsyncChanged => "async changed",
+            SignatureChangeKind::VuePropTypeChanged => &format!(
+                "prop '{base_surface_text}' type changed from '{old_text}' to '{}'",
+                signature_change.new.text_normalized
+            ),
+            SignatureChangeKind::VuePropBecameRequired => {
+                &format!("prop '{base_surface_text}' became required")
+            }
         };
         report = report.with_label(
             Label::new((

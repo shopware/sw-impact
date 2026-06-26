@@ -117,25 +117,22 @@ pub fn process_vue(path: &Path, repo_path: &Path, src: &[u8], collector: &Surfac
                         let mut cursor = c.node.walk();
 
                         for child in c.node.named_children(&mut cursor) {
-                            if child.kind() == "string" {
-                                if let Some(prop_name) = string_value(child, src) {
-                                    collector.push(
-                                        Surface::builder()
-                                            .file_path(repo_path.to_owned())
-                                            .source_token(SourceToken::from_node_source(child, src))
-                                            .fqn(format!(
-                                                "vue.{}.prop.{}",
-                                                component_name, &prop_name
-                                            ))
-                                            .signature(VueProp {
-                                                type_annotation: None,
-                                                required: None,
-                                            })
-                                            .build()
-                                            .unwrap(),
-                                    );
-                                    surface_count += 1;
-                                }
+                            if child.kind() == "string"
+                                && let Some(prop_name) = string_value(child, src)
+                            {
+                                collector.push(
+                                    Surface::builder()
+                                        .file_path(repo_path.to_owned())
+                                        .source_token(SourceToken::from_node_source(child, src))
+                                        .fqn(format!("vue.{}.prop.{}", component_name, &prop_name))
+                                        .signature(VueProp {
+                                            type_annotation: None,
+                                            required: None,
+                                        })
+                                        .build()
+                                        .unwrap(),
+                                );
+                                surface_count += 1;
                             }
                         }
                     }
@@ -212,23 +209,16 @@ pub fn process_vue(path: &Path, repo_path: &Path, src: &[u8], collector: &Surfac
 }
 
 fn parse_prop_definition(value_node: Node, src: &[u8], path: &Path) -> Option<VueProp> {
-    return match value_node.kind() {
+    match value_node.kind() {
         // title: String
-        "identifier" => Some(VueProp {
-            type_annotation: Some(SourceToken::from_node_source(value_node, src)),
-            required: None,
-        }),
         // input: [Number, String]
-        "array" => Some(VueProp {
+        "identifier" | "array" => Some(VueProp {
             type_annotation: Some(SourceToken::from_node_source(value_node, src)),
             required: None,
         }),
         // count: { type: Number, required: true }
         // msg: { type: [String, Number] }
-        "object" => {
-            // TODO: implement me
-            None
-        }
+        "object" => Some(parse_prop_object(value_node, src)),
         k => {
             error!(
                 "failed to parse vue prop declaration of kind {} in {} with text: {}",
@@ -238,7 +228,45 @@ fn parse_prop_definition(value_node: Node, src: &[u8], path: &Path) -> Option<Vu
             );
             None
         }
+    }
+}
+
+fn parse_prop_object(obj_node: Node, src: &[u8]) -> VueProp {
+    let mut prop = VueProp {
+        type_annotation: None,
+        required: None,
     };
+
+    let mut cursor = obj_node.walk();
+    for child in obj_node.named_children(&mut cursor) {
+        if child.kind() != "pair" {
+            continue;
+        }
+
+        let Some(key_node) = child.child_by_field_name("key") else {
+            continue;
+        };
+
+        let Some(value_node) = child.child_by_field_name("value") else {
+            continue;
+        };
+
+        let key_str = key_node.utf8_text(src).unwrap();
+        match key_str {
+            "type" => prop.type_annotation = Some(SourceToken::from_node_source(value_node, src)),
+            "required" => {
+                let value_str = value_node.utf8_text(src).unwrap();
+                if value_str == "true" {
+                    prop.required = Some(SourceToken::from_node_source(value_node, src));
+                }
+            }
+            _ => {
+                // Other object attributes don't matter for extraction
+            }
+        };
+    }
+
+    prop
 }
 
 struct VueFile<'a> {
@@ -248,7 +276,7 @@ struct VueFile<'a> {
 }
 
 /// Returns the TS / JS object defining the vue component with options api
-/// If it exists or nothing if the component is declared as @private / @experimental in a comment
+/// If it exists or nothing if the component is declared as @private / @experimental / @internal in a comment
 fn scan_file_top_level<'a>(root: Node<'a>, src: &[u8], path: &Path) -> VueFile<'a> {
     let mut cursor = QueryCursor::new();
     let matches = cursor.matches(&QUERY_FILE, root, src);
@@ -271,7 +299,10 @@ fn scan_file_top_level<'a>(root: Node<'a>, src: &[u8], path: &Path) -> VueFile<'
             if *capture_name == "toplevel.comment" {
                 let text = c.node.utf8_text(src).unwrap();
 
-                if text.contains("@private") || text.contains("@experimental") {
+                if text.contains("@private")
+                    || text.contains("@experimental")
+                    || text.contains("@internal")
+                {
                     vue_file.is_private = true;
                 }
                 continue;

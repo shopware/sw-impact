@@ -18,7 +18,3 @@ tree-sitter-typescript = "0.23.2"
 [dev-dependencies]
 insta = { version = "1.48.0", features = ["json", "yaml"] }
 
-[profile.dev.package]
-insta.opt-level = 3
-similar.opt-level = 3
-

@@ -2,3 +2,9 @@
 resolver = "3"
 members = ["crates/sw-impact","crates/sw-impact-scanner"]
 
+# Speedup test suite, recommended by insta dev dependency,
+# used by sw-impact-scanner
+[profile.dev.package]
+insta.opt-level = 3
+similar.opt-level = 3
+

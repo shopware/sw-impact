@@ -34,6 +34,8 @@ pub enum SignatureChangeKind {
     TsMethodRequiredParamAdded,
     TsMethodReturnTypeChanged,
     TsMethodAsyncChanged,
+    VuePropTypeChanged,
+    VuePropBecameRequired,
 }
 
 impl Display for SignatureChangeKind {
@@ -56,6 +58,8 @@ impl Display for SignatureChangeKind {
                 write!(f, "ts:method:return:type:changed")
             }
             SignatureChangeKind::TsMethodAsyncChanged => write!(f, "ts:method:async:changed"),
+            SignatureChangeKind::VuePropTypeChanged => write!(f, "vue:prop:type:changed"),
+            SignatureChangeKind::VuePropBecameRequired => write!(f, "vue:prop:became:required"),
         }
     }
 }
@@ -212,6 +216,35 @@ impl Report {
         new_surface: &Surface,
         new: &VueProp,
     ) {
-        // TODO: implement me
+        // compare prop types
+        if base.type_annotation != new.type_annotation {
+            self.breaking_changes.push(SignatureChange {
+                base_surface: base_surface.clone(),
+                kind: SignatureChangeKind::VuePropTypeChanged,
+                old: base.type_annotation.clone(),
+                new: match &new.type_annotation {
+                    Some(t) => t.clone(),
+                    None => new_surface.source_token.clone(),
+                },
+            });
+
+            return;
+        }
+
+        // check if prop became required
+        if base.required != new.required && new.required.is_some() {
+            self.breaking_changes.push(SignatureChange {
+                base_surface: base_surface.clone(),
+                kind: SignatureChangeKind::VuePropBecameRequired,
+                old: base.required.clone(),
+                new: match &new.required {
+                    Some(t) => t.clone(),
+                    None => new_surface.source_token.clone(),
+                },
+            });
+        }
+
+        // TODO: what if a required prop gets added? Needs to be reported as well,
+        // but right now they are individual surfaces without connections to each other...
     }
 }

@@ -13,7 +13,7 @@ fn run_fixture_test(fixture: impl Into<PathBuf>) {
         .expect(&format!("failed loading fixture {}", path.display()));
 
     let collector = SurfaceCollector::new();
-    sw_impact_scanner::vue::process_vue(&path, src.as_bytes(), &collector);
+    sw_impact_scanner::vue::process_vue(&path, &path, src.as_bytes(), &collector);
     let surfaces = collector.finish();
 
     let mut settings = Settings::clone_current();
