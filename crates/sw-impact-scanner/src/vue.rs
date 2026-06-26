@@ -29,14 +29,14 @@ pub fn validate_queries() {
     let _ = &*QUERY_OBJ;
 }
 
-pub fn process_file_vue(path: &Path, collector: &SurfaceCollector) {
+pub fn process_file_vue(path: &Path, repo_path: &Path, collector: &SurfaceCollector) {
     let file_content = std::fs::read_to_string(path).unwrap();
     let src = file_content.as_bytes();
 
-    process_vue(path, src, collector);
+    process_vue(path, repo_path, src, collector);
 }
 
-pub fn process_vue(path: &Path, src: &[u8], collector: &SurfaceCollector) {
+pub fn process_vue(path: &Path, repo_path: &Path, src: &[u8], collector: &SurfaceCollector) {
     let lang: &Language = &tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
 
     let mut parser = Parser::new();
@@ -45,7 +45,7 @@ pub fn process_vue(path: &Path, src: &[u8], collector: &SurfaceCollector) {
     let tree = parser.parse(src, None).unwrap();
     let root = tree.root_node();
 
-    let vue_file = scan_file_top_level(root, src, path);
+    let vue_file = scan_file_top_level(root, src, repo_path);
     let Some(obj) = vue_file.options_obj else {
         info!("skipping (no vue component): {}", path.display());
         return;
@@ -92,7 +92,7 @@ pub fn process_vue(path: &Path, src: &[u8], collector: &SurfaceCollector) {
 
                 collector.push(
                     Surface::builder()
-                        .file_path(path.to_owned())
+                        .file_path(repo_path.to_owned())
                         .source_token(SourceToken::from_range_source(
                             method_signature_range(c.node),
                             src,
@@ -121,7 +121,7 @@ pub fn process_vue(path: &Path, src: &[u8], collector: &SurfaceCollector) {
                                 if let Some(prop_name) = string_value(child, src) {
                                     collector.push(
                                         Surface::builder()
-                                            .file_path(path.to_owned())
+                                            .file_path(repo_path.to_owned())
                                             .source_token(SourceToken::from_node_source(child, src))
                                             .fqn(format!(
                                                 "vue.{}.prop.{}",
@@ -155,11 +155,13 @@ pub fn process_vue(path: &Path, src: &[u8], collector: &SurfaceCollector) {
                                 continue;
                             };
 
-                            if let Some(prop_def) = parse_prop_definition(value_node, src) {
+                            if let Some(prop_def) =
+                                parse_prop_definition(value_node, src, repo_path)
+                            {
                                 let prop_name = key_node.utf8_text(src).unwrap();
                                 collector.push(
                                     Surface::builder()
-                                        .file_path(path.to_owned())
+                                        .file_path(repo_path.to_owned())
                                         .source_token(SourceToken::from_node_source(key_node, src))
                                         .fqn(format!("vue.{}.prop.{}", component_name, prop_name))
                                         .signature(prop_def)
@@ -185,7 +187,7 @@ pub fn process_vue(path: &Path, src: &[u8], collector: &SurfaceCollector) {
 
             collector.push(
                 Surface::builder()
-                    .file_path(path.to_owned())
+                    .file_path(repo_path.to_owned())
                     .source_token(SourceToken::from_node_source(c.node, src))
                     .fqn(format!(
                         "vue.{}.{}.{}",

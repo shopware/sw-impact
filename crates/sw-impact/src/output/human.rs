@@ -6,13 +6,14 @@ use std::{
 use ariadne::{Label, Report, ReportKind, Source};
 use sw_impact_scanner::report::Report as DataReport;
 
-pub fn output_human(report: &DataReport) {
+pub fn output_human(report: &DataReport, source_root: &Path) {
     let mut source_cache = SourceFileCache::default();
 
     for surface in &report.removed {
         let file = surface.file_path.as_path();
+        let source_file = source_root.join(file);
         let file_id = file.display().to_string();
-        let source = source_cache.get(file);
+        let source = source_cache.get(source_file);
 
         Report::build(
             ReportKind::Error,
@@ -44,8 +45,9 @@ pub fn output_human(report: &DataReport) {
 
     for signature_change in &report.breaking_changes {
         let file = signature_change.base_surface.file_path.as_path();
+        let source_file = source_root.join(file);
         let file_id = file.display().to_string();
-        let source = source_cache.get(file);
+        let source = source_cache.get(source_file);
 
         let mut report = Report::build(
             ReportKind::Error,

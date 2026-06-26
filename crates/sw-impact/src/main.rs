@@ -85,7 +85,7 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
 
-            report.output_diagnostics(args.format);
+            report.output_diagnostics(args.format, &args.path);
             ExitCode::FAILURE
         }
     }
