@@ -12,51 +12,70 @@ pub fn output_github(report: &Report) {
             &surface.source_token.source_range,
             "api:removed",
             &format!(
-                "Removed public API surface `{}`. Old signature was: `{}`",
+                "Removed public API surface '{}'. Old signature was: '{}'",
                 surface.fqn, surface.source_token.text_normalized
             ),
         );
     }
 
     for signature_change in &report.breaking_changes {
+        let surface_text = &signature_change.surface.source_token.text_normalized;
         let old_text = signature_change
             .old
             .as_ref()
             .map(|t| t.text_normalized.as_str())
             .unwrap_or("");
+
+        // TODO: refactor this as it is duplicate code with the human.rs format
         let detail = match signature_change.kind {
             SignatureChangeKind::TsMethodParamRemoved => {
-                format!("parameter `{old_text}` was removed")
+                &format!("parameter '{old_text}' was removed")
             }
-            SignatureChangeKind::TsMethodParamTypeChanged => format!(
-                "parameter type changed from `{old_text}` to `{}`",
+            SignatureChangeKind::TsMethodParamTypeChanged => &format!(
+                "parameter type changed from '{old_text}' to '{}'",
                 signature_change.new.text_normalized
             ),
-            SignatureChangeKind::TsMethodParamRestChanged => {
-                "parameter ...rest changed".to_string()
-            }
-            SignatureChangeKind::TsMethodParamBecameRequired => {
-                "parameter became required".to_string()
-            }
-            SignatureChangeKind::TsMethodRequiredParamAdded => {
-                "required parameter was added".to_string()
-            }
-            SignatureChangeKind::TsMethodReturnTypeChanged => format!(
-                "return type changed from `{old_text}` to `{}`",
+            SignatureChangeKind::TsMethodParamRestChanged => "parameter ...rest changed",
+            SignatureChangeKind::TsMethodParamBecameRequired => "parameter became required",
+            SignatureChangeKind::TsMethodRequiredParamAdded => "required parameter was added",
+            SignatureChangeKind::TsMethodReturnTypeChanged => &format!(
+                "return type changed from '{old_text}' to '{}'",
                 signature_change.new.text_normalized
             ),
-            SignatureChangeKind::TsMethodAsyncChanged => "async changed".to_string(),
+            SignatureChangeKind::TsMethodAsyncChanged => "async changed",
+            SignatureChangeKind::VuePropTypeChanged => &format!(
+                "prop '{surface_text}' type changed from '{old_text}' to '{}'",
+                signature_change.new.text_normalized
+            ),
+            SignatureChangeKind::VuePropBecameRequired => {
+                &format!("prop '{surface_text}' became required")
+            }
+            SignatureChangeKind::VueRequiredPropAdded => {
+                &format!("required prop '{surface_text}' was added to existing component")
+            }
         };
 
+        let mut msg = format!(
+            "Potential breaking change on public API surface '{}': {detail}",
+            signature_change.surface.fqn,
+        );
+        if !matches!(
+            signature_change.kind,
+            SignatureChangeKind::VuePropBecameRequired
+                | SignatureChangeKind::VuePropTypeChanged
+                | SignatureChangeKind::VueRequiredPropAdded
+        ) {
+            msg.push_str(&format!(
+                " Old signature was: '{}'",
+                signature_change.surface.source_token.text_normalized
+            ));
+        }
+
         print_error(
-            signature_change.base_surface.file_path.as_path(),
+            signature_change.surface.file_path.as_path(),
             &signature_change.new.source_range,
             &signature_change.kind.to_string(),
-            &format!(
-                "Potential breaking change on public API surface `{}`: {detail}. Old signature was: `{}`",
-                signature_change.base_surface.fqn,
-                signature_change.base_surface.source_token.text_normalized
-            ),
+            &msg,
         );
     }
 }

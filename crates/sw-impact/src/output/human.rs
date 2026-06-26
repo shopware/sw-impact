@@ -4,7 +4,7 @@ use std::{
 };
 
 use ariadne::{Label, Report, ReportKind, Source};
-use sw_impact_scanner::report::Report as DataReport;
+use sw_impact_scanner::report::{Report as DataReport, SignatureChangeKind};
 
 pub fn output_human(report: &DataReport, source_root: &Path) {
     let mut source_cache = SourceFileCache::default();
@@ -15,36 +15,34 @@ pub fn output_human(report: &DataReport, source_root: &Path) {
         let file_id = file.display().to_string();
         let source = source_cache.get(source_file);
 
-        Report::build(
-            ReportKind::Error,
+        let (start_byte, end_byte) = if source.is_empty() {
+            (0usize, 0usize)
+        } else {
             (
-                &file_id,
-                surface.source_token.source_range.start_byte
-                    ..surface.source_token.source_range.end_byte,
-            ),
-        )
-        .with_code("api:removed")
-        .with_message("Removed public API surface")
-        .with_help(format!(
-            "old signature was: {}",
-            surface.source_token.text_normalized
-        ))
-        .with_note(format!("API surface: {}", surface.fqn))
-        .with_label(
-            Label::new((
-                &file_id,
-                surface.source_token.source_range.start_byte
-                    ..surface.source_token.source_range.start_byte,
+                surface.source_token.source_range.start_byte,
+                surface.source_token.source_range.end_byte,
+            )
+        };
+
+        Report::build(ReportKind::Error, (&file_id, start_byte..end_byte))
+            .with_code("api:removed")
+            .with_message("Removed public API surface")
+            .with_help(format!(
+                "old signature was: {}",
+                surface.source_token.text_normalized
             ))
-            .with_message("was previously defined in this line"),
-        )
-        .finish()
-        .print((&file_id, Source::from(source)))
-        .unwrap();
+            .with_note(format!("API surface: {}", surface.fqn))
+            .with_label(
+                Label::new((&file_id, start_byte..start_byte))
+                    .with_message("was previously defined in this file"),
+            )
+            .finish()
+            .print((&file_id, Source::from(source)))
+            .unwrap();
     }
 
     for signature_change in &report.breaking_changes {
-        let file = signature_change.base_surface.file_path.as_path();
+        let file = signature_change.surface.file_path.as_path();
         let source_file = source_root.join(file);
         let file_id = file.display().to_string();
         let source = source_cache.get(source_file);
@@ -54,28 +52,30 @@ pub fn output_human(report: &DataReport, source_root: &Path) {
             (
                 &file_id,
                 signature_change
-                    .base_surface
+                    .surface
                     .source_token
                     .source_range
                     .start_byte
-                    ..signature_change
-                        .base_surface
-                        .source_token
-                        .source_range
-                        .end_byte,
+                    ..signature_change.surface.source_token.source_range.end_byte,
             ),
         )
         .with_code(signature_change.kind)
         .with_message("Potential breaking change on public API surface")
-        .with_help(format!(
-            "old signature was: {}",
-            signature_change.base_surface.source_token.text_normalized
-        ))
-        .with_note(format!(
-            "API surface: {}",
-            signature_change.base_surface.fqn
-        ));
+        .with_note(format!("API surface: {}", signature_change.surface.fqn));
 
+        if !matches!(
+            signature_change.kind,
+            SignatureChangeKind::VuePropBecameRequired
+                | SignatureChangeKind::VuePropTypeChanged
+                | SignatureChangeKind::VueRequiredPropAdded
+        ) {
+            report = report.with_help(format!(
+                "old signature was: {}",
+                signature_change.surface.source_token.text_normalized
+            ));
+        }
+
+        let surface_text = &signature_change.surface.source_token.text_normalized;
         if let Some(t) = &signature_change.old {
             report = report.with_note(format!("before: {}", &t.text_normalized));
         }
@@ -85,6 +85,7 @@ pub fn output_human(report: &DataReport, source_root: &Path) {
             .map(|t| t.text_normalized.as_str())
             .unwrap_or("");
 
+        // TODO: refactor this as it is duplicate code with the github.rs format
         let label = match signature_change.kind {
             sw_impact_scanner::report::SignatureChangeKind::TsMethodParamRemoved => {
                 "parameter removed"
@@ -107,6 +108,16 @@ pub fn output_human(report: &DataReport, source_root: &Path) {
                 old_text, &signature_change.new.text_normalized
             ),
             sw_impact_scanner::report::SignatureChangeKind::TsMethodAsyncChanged => "async changed",
+            SignatureChangeKind::VuePropTypeChanged => &format!(
+                "prop '{surface_text}' type changed from '{old_text}' to '{}'",
+                signature_change.new.text_normalized
+            ),
+            SignatureChangeKind::VuePropBecameRequired => {
+                &format!("prop '{surface_text}' became required")
+            }
+            SignatureChangeKind::VueRequiredPropAdded => {
+                &format!("required prop '{surface_text}' was added to existing component")
+            }
         };
         report = report.with_label(
             Label::new((
@@ -130,12 +141,11 @@ struct SourceFileCache {
 }
 
 impl SourceFileCache {
-    // TODO: error handling?
     fn get(&mut self, path: impl AsRef<Path>) -> &str {
         let path = path.as_ref();
 
         if !self.files.contains_key(path) {
-            let content = std::fs::read_to_string(path).unwrap();
+            let content = std::fs::read_to_string(path).unwrap_or_else(|_| String::new());
             self.files.insert(path.to_path_buf(), content);
         }
 

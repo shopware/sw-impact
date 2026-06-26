@@ -30,13 +30,17 @@ pub fn validate_queries() {
 }
 
 pub fn process_file_vue(path: &Path, repo_path: &Path, collector: &SurfaceCollector) {
+    let file_content = std::fs::read_to_string(path).unwrap();
+    let src = file_content.as_bytes();
+
+    process_vue(path, repo_path, src, collector);
+}
+
+pub fn process_vue(path: &Path, repo_path: &Path, src: &[u8], collector: &SurfaceCollector) {
     let lang: &Language = &tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
 
     let mut parser = Parser::new();
     parser.set_language(lang).unwrap();
-
-    let file_content = std::fs::read_to_string(path).unwrap();
-    let src = file_content.as_bytes();
 
     let tree = parser.parse(src, None).unwrap();
     let root = tree.root_node();
@@ -107,27 +111,73 @@ pub fn process_file_vue(path: &Path, repo_path: &Path, collector: &SurfaceCollec
                 continue;
             }
 
-            if c.node.kind() == "pair" && *capture_name == "prop" {
-                let key = c.node.child_by_field_name("key").unwrap();
-                let value = c.node.child_by_field_name("value").unwrap();
+            if *capture_name == "props.value" {
+                match c.node.kind() {
+                    "array" => {
+                        let mut cursor = c.node.walk();
 
-                collector.push(
-                    Surface::builder()
-                        .file_path(repo_path.to_owned())
-                        .source_token(SourceToken::from_node_source(key, src))
-                        .fqn(format!(
-                            "vue.{}.{}.{}",
-                            component_name,
-                            capture_name,
-                            key.utf8_text(src).unwrap()
-                        ))
-                        .signature(VueProp {
-                            definition: SourceToken::from_node_source(value, src),
-                        })
-                        .build()
-                        .unwrap(),
-                );
-                surface_count += 1;
+                        for child in c.node.named_children(&mut cursor) {
+                            if child.kind() == "string"
+                                && let Some(prop_name) = string_value(child, src)
+                            {
+                                collector.push(
+                                    Surface::builder()
+                                        .file_path(repo_path.to_owned())
+                                        .source_token(SourceToken::from_node_source(child, src))
+                                        .fqn(format!("vue.{}.prop.{}", component_name, &prop_name))
+                                        .signature(VueProp {
+                                            type_annotation: None,
+                                            required: None,
+                                        })
+                                        .build()
+                                        .unwrap(),
+                                );
+                                surface_count += 1;
+                            }
+                        }
+                    }
+                    "object" => {
+                        let mut cursor = c.node.walk();
+
+                        for child in c.node.named_children(&mut cursor) {
+                            if child.kind() != "pair" {
+                                continue;
+                            }
+
+                            let Some(key_node) = child.child_by_field_name("key") else {
+                                continue;
+                            };
+
+                            let Some(value_node) = child.child_by_field_name("value") else {
+                                continue;
+                            };
+
+                            if let Some(prop_def) =
+                                parse_prop_definition(value_node, src, repo_path)
+                            {
+                                let prop_name = key_node.utf8_text(src).unwrap();
+                                collector.push(
+                                    Surface::builder()
+                                        .file_path(repo_path.to_owned())
+                                        .source_token(SourceToken::from_node_source(key_node, src))
+                                        .fqn(format!("vue.{}.prop.{}", component_name, prop_name))
+                                        .signature(prop_def)
+                                        .build()
+                                        .unwrap(),
+                                );
+                                surface_count += 1;
+                            }
+                        }
+                    }
+                    k => {
+                        error!(
+                            "failed to parse vue prop declaration of kind {} in {} with text: {}",
+                            k,
+                            path.display(),
+                            c.node.utf8_text(src).unwrap()
+                        );
+                    }
+                }
 
                 continue;
             }
@@ -149,13 +199,97 @@ pub fn process_file_vue(path: &Path, repo_path: &Path, collector: &SurfaceCollec
         }
     });
 
-    if surface_count > 0 && !component_name.starts_with("sw-") {
+    if surface_count == 0 {
+        return; // found object was not a vue component,
+        // as it didn't had any props, computed, methods attributes that could be parsed
+    }
+
+    if !component_name.starts_with("sw-") {
         error!(
             "found surfaces in file {} with detected component name {} that doesn't start with 'sw-'",
             path.display(),
             component_name
         );
     }
+
+    // always add one surface for the (public) vue component itself
+    collector.push(
+        Surface::builder()
+            .file_path(repo_path.to_owned())
+            .source_token(SourceToken::from_range_source(
+                tree_sitter::Range {
+                    start_byte: 0,
+                    end_byte: 0,
+                    start_point: tree_sitter::Point { row: 0, column: 0 },
+                    end_point: tree_sitter::Point { row: 0, column: 0 },
+                },
+                src,
+            ))
+            .fqn(format!("vue.{component_name}"))
+            .build()
+            .unwrap(),
+    );
+}
+
+fn parse_prop_definition(value_node: Node, src: &[u8], path: &Path) -> Option<VueProp> {
+    match value_node.kind() {
+        // title: String
+        // input: [Number, String]
+        "identifier" | "array" => Some(VueProp {
+            type_annotation: Some(SourceToken::from_node_source(value_node, src)),
+            required: None,
+        }),
+        // count: { type: Number, required: true }
+        // msg: { type: [String, Number] }
+        "object" => Some(parse_prop_object(value_node, src)),
+        k => {
+            error!(
+                "failed to parse vue prop declaration of kind {} in {} with text: {}",
+                k,
+                path.display(),
+                value_node.utf8_text(src).unwrap()
+            );
+            None
+        }
+    }
+}
+
+fn parse_prop_object(obj_node: Node, src: &[u8]) -> VueProp {
+    let mut prop = VueProp {
+        type_annotation: None,
+        required: None,
+    };
+
+    let mut cursor = obj_node.walk();
+    for child in obj_node.named_children(&mut cursor) {
+        if child.kind() != "pair" {
+            continue;
+        }
+
+        let Some(key_node) = child.child_by_field_name("key") else {
+            continue;
+        };
+
+        let Some(value_node) = child.child_by_field_name("value") else {
+            continue;
+        };
+
+        let key_str = key_node.utf8_text(src).unwrap();
+        match key_str {
+            "type" => prop.type_annotation = Some(SourceToken::from_node_source(value_node, src)),
+            "required" => {
+                let value_str = value_node.utf8_text(src).unwrap();
+                if value_str == "true" {
+                    prop.required = Some(SourceToken::from_node_source(value_node, src));
+                }
+            }
+            _ => {
+                // Other object attributes don't matter for extraction
+            }
+        };
+    }
+
+    prop
 }
 
 struct VueFile<'a> {
@@ -165,7 +299,7 @@ struct VueFile<'a> {
 }
 
 /// Returns the TS / JS object defining the vue component with options api
-/// If it exists or nothing if the component is declared as @private / @experimental in a comment
+/// If it exists or nothing if the component is declared as @private / @experimental / @internal in a comment
 fn scan_file_top_level<'a>(root: Node<'a>, src: &[u8], path: &Path) -> VueFile<'a> {
     let mut cursor = QueryCursor::new();
     let matches = cursor.matches(&QUERY_FILE, root, src);
@@ -188,7 +322,10 @@ fn scan_file_top_level<'a>(root: Node<'a>, src: &[u8], path: &Path) -> VueFile<'
             if *capture_name == "toplevel.comment" {
                 let text = c.node.utf8_text(src).unwrap();
 
-                if text.contains("@private") || text.contains("@experimental") {
+                if text.contains("@private")
+                    || text.contains("@experimental")
+                    || text.contains("@internal")
+                {
                     vue_file.is_private = true;
                 }
                 continue;
@@ -296,6 +433,34 @@ fn ts_param_from_tree_sitter(fqn: &str, param: Node, src: &[u8]) -> Option<TsPar
             None
         }
     }
+}
+
+fn string_value(node: Node, src: &[u8]) -> Option<String> {
+    // tree could look like this
+    // string
+    //   string_fragment
+    //   escape_sequence
+    //   string_fragment
+
+    let mut cursor = node.walk();
+    let mut value = String::with_capacity(node.end_byte() - node.start_byte());
+
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "string_fragment" => {
+                value.push_str(child.utf8_text(src).ok()?);
+            }
+
+            // keep escape codes as raw text for now
+            "escape_sequence" => {
+                value.push_str(child.utf8_text(src).ok()?);
+            }
+
+            _ => {}
+        }
+    }
+
+    Some(value)
 }
 
 fn extract_component_name_from_template(s: &str) -> Option<String> {

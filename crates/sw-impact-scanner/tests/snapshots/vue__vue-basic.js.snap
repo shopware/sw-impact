@@ -1,0 +1,200 @@
+---
+source: crates/sw-impact-scanner/tests/vue.rs
+description: "import template from './basic-vue.html.twig';\n\nexport default {\n    template,\n\n    emits: [\n        'block-duplicate',\n        'block-delete',\n    ],\n\n    props: {\n        block: {\n            type: Object,\n            required: true,\n        },\n\n        removable: {\n            type: Boolean,\n            required: false,\n            default() {\n                return false;\n            },\n        },\n\n        duplicable: {\n            type: Boolean,\n            required: false,\n            default() {\n                return true;\n            },\n        },\n    },\n\n    computed: {\n        isLoading() {\n            return this.block !== null;\n        },\n    },\n\n    methods: {\n        onBlockDuplicate() {\n            this.$emit('block-duplicate', this.block);\n        },\n\n        onBlockDelete() {\n            this.$emit('block-delete', this.block);\n        },\n    },\n};\n"
+---
+vue.basic-vue:
+  file_path: tests/fixtures/vue-basic.js
+  source_token:
+    text_normalized: ""
+    source_range:
+      start_byte: 0
+      end_byte: 0
+      start_point:
+        row: 0
+        column: 0
+      end_point:
+        row: 0
+        column: 0
+  fqn: vue.basic-vue
+  signature: None
+vue.basic-vue.computed.isLoading:
+  file_path: tests/fixtures/vue-basic.js
+  source_token:
+    text_normalized: isLoading()
+    source_range:
+      start_byte: 594
+      end_byte: 606
+      start_point:
+        row: 34
+        column: 8
+      end_point:
+        row: 34
+        column: 20
+  fqn: vue.basic-vue.computed.isLoading
+  signature:
+    TsMethod:
+      async: ~
+      parameters: []
+      return_type: ~
+vue.basic-vue.emit.block-delete:
+  file_path: tests/fixtures/vue-basic.js
+  source_token:
+    text_normalized: block-delete
+    source_range:
+      start_byte: 128
+      end_byte: 140
+      start_point:
+        row: 7
+        column: 9
+      end_point:
+        row: 7
+        column: 21
+  fqn: vue.basic-vue.emit.block-delete
+  signature: None
+vue.basic-vue.emit.block-duplicate:
+  file_path: tests/fixtures/vue-basic.js
+  source_token:
+    text_normalized: block-duplicate
+    source_range:
+      start_byte: 101
+      end_byte: 116
+      start_point:
+        row: 6
+        column: 9
+      end_point:
+        row: 6
+        column: 24
+  fqn: vue.basic-vue.emit.block-duplicate
+  signature: None
+vue.basic-vue.method.onBlockDelete:
+  file_path: tests/fixtures/vue-basic.js
+  source_token:
+    text_normalized: onBlockDelete()
+    source_range:
+      start_byte: 786
+      end_byte: 802
+      start_point:
+        row: 44
+        column: 8
+      end_point:
+        row: 44
+        column: 24
+  fqn: vue.basic-vue.method.onBlockDelete
+  signature:
+    TsMethod:
+      async: ~
+      parameters: []
+      return_type: ~
+vue.basic-vue.method.onBlockDuplicate:
+  file_path: tests/fixtures/vue-basic.js
+  source_token:
+    text_normalized: onBlockDuplicate()
+    source_range:
+      start_byte: 690
+      end_byte: 709
+      start_point:
+        row: 40
+        column: 8
+      end_point:
+        row: 40
+        column: 27
+  fqn: vue.basic-vue.method.onBlockDuplicate
+  signature:
+    TsMethod:
+      async: ~
+      parameters: []
+      return_type: ~
+vue.basic-vue.prop.block:
+  file_path: tests/fixtures/vue-basic.js
+  source_token:
+    text_normalized: block
+    source_range:
+      start_byte: 172
+      end_byte: 177
+      start_point:
+        row: 11
+        column: 8
+      end_point:
+        row: 11
+        column: 13
+  fqn: vue.basic-vue.prop.block
+  signature:
+    VueProp:
+      type_annotation:
+        text_normalized: Object
+        source_range:
+          start_byte: 199
+          end_byte: 205
+          start_point:
+            row: 12
+            column: 18
+          end_point:
+            row: 12
+            column: 24
+      required:
+        text_normalized: "true"
+        source_range:
+          start_byte: 229
+          end_byte: 233
+          start_point:
+            row: 13
+            column: 22
+          end_point:
+            row: 13
+            column: 26
+vue.basic-vue.prop.duplicable:
+  file_path: tests/fixtures/vue-basic.js
+  source_token:
+    text_normalized: duplicable
+    source_range:
+      start_byte: 413
+      end_byte: 423
+      start_point:
+        row: 24
+        column: 8
+      end_point:
+        row: 24
+        column: 18
+  fqn: vue.basic-vue.prop.duplicable
+  signature:
+    VueProp:
+      type_annotation:
+        text_normalized: Boolean
+        source_range:
+          start_byte: 445
+          end_byte: 452
+          start_point:
+            row: 25
+            column: 18
+          end_point:
+            row: 25
+            column: 25
+      required: ~
+vue.basic-vue.prop.removable:
+  file_path: tests/fixtures/vue-basic.js
+  source_token:
+    text_normalized: removable
+    source_range:
+      start_byte: 255
+      end_byte: 264
+      start_point:
+        row: 16
+        column: 8
+      end_point:
+        row: 16
+        column: 17
+  fqn: vue.basic-vue.prop.removable
+  signature:
+    VueProp:
+      type_annotation:
+        text_normalized: Boolean
+        source_range:
+          start_byte: 286
+          end_byte: 293
+          start_point:
+            row: 17
+            column: 18
+          end_point:
+            row: 17
+            column: 25
+      required: ~

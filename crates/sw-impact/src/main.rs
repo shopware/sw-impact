@@ -77,6 +77,7 @@ fn main() -> ExitCode {
             let surface_index = load_surface_map(&args.index).unwrap();
             eprintln!("loaded index with {} api surfaces", surface_index.len());
             let new_surface = scan_dir(&args.path).unwrap();
+            eprintln!("found {} new api surfaces", new_surface.len());
 
             let report = Report::build_report(&surface_index, &new_surface);
 

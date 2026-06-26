@@ -19,7 +19,9 @@ pub struct Report {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SignatureChange {
-    pub base_surface: Surface,
+    /// In most cases points to the base surface,
+    /// Only new surface if there is no base surface available
+    pub surface: Surface,
     pub kind: SignatureChangeKind,
     pub old: Option<SourceToken>,
     pub new: SourceToken,
@@ -34,6 +36,9 @@ pub enum SignatureChangeKind {
     TsMethodRequiredParamAdded,
     TsMethodReturnTypeChanged,
     TsMethodAsyncChanged,
+    VuePropTypeChanged,
+    VuePropBecameRequired,
+    VueRequiredPropAdded,
 }
 
 impl Display for SignatureChangeKind {
@@ -56,6 +61,9 @@ impl Display for SignatureChangeKind {
                 write!(f, "ts:method:return:type:changed")
             }
             SignatureChangeKind::TsMethodAsyncChanged => write!(f, "ts:method:async:changed"),
+            SignatureChangeKind::VuePropTypeChanged => write!(f, "vue:prop:type:changed"),
+            SignatureChangeKind::VuePropBecameRequired => write!(f, "vue:prop:became:required"),
+            SignatureChangeKind::VueRequiredPropAdded => write!(f, "vue:required:prop:added"),
         }
     }
 }
@@ -70,6 +78,14 @@ impl Report {
             } else {
                 report.removed.push(base_surface.clone());
             }
+        }
+
+        for (fqn, new_surface) in new {
+            if base.get(fqn).is_some() {
+                continue;
+            }
+
+            report.check_added_for_breaks(new_surface, base);
         }
 
         report
@@ -115,7 +131,7 @@ impl Report {
     ) {
         if base.r#async != new.r#async {
             self.breaking_changes.push(SignatureChange {
-                base_surface: base_surface.clone(),
+                surface: base_surface.clone(),
                 kind: SignatureChangeKind::TsMethodAsyncChanged,
                 old: base.r#async.clone(),
                 new: match &new.r#async {
@@ -127,7 +143,7 @@ impl Report {
 
         if base.return_type != new.return_type {
             self.breaking_changes.push(SignatureChange {
-                base_surface: base_surface.clone(),
+                surface: base_surface.clone(),
                 kind: SignatureChangeKind::TsMethodReturnTypeChanged,
                 old: base.return_type.clone(),
                 new: match &new.return_type {
@@ -143,7 +159,7 @@ impl Report {
         for (base_param, new_param) in base.parameters.iter().zip(new.parameters.iter()) {
             if base_param.optional != new_param.optional && new_param.default_value.is_none() {
                 self.breaking_changes.push(SignatureChange {
-                    base_surface: base_surface.clone(),
+                    surface: base_surface.clone(),
                     kind: SignatureChangeKind::TsMethodParamBecameRequired,
                     old: base_param.optional.clone(),
                     new: match &new_param.optional {
@@ -155,7 +171,7 @@ impl Report {
 
             if base_param.type_annotation != new_param.type_annotation {
                 self.breaking_changes.push(SignatureChange {
-                    base_surface: base_surface.clone(),
+                    surface: base_surface.clone(),
                     kind: SignatureChangeKind::TsMethodParamTypeChanged,
                     old: base_param.type_annotation.clone(),
                     new: match &new_param.type_annotation {
@@ -167,7 +183,7 @@ impl Report {
 
             if base_param.rest != new_param.rest {
                 self.breaking_changes.push(SignatureChange {
-                    base_surface: base_surface.clone(),
+                    surface: base_surface.clone(),
                     kind: SignatureChangeKind::TsMethodParamRestChanged,
                     old: base_param.rest.clone(),
                     new: match &new_param.rest {
@@ -184,7 +200,7 @@ impl Report {
 
             if param.optional.is_none() && param.default_value.is_none() {
                 self.breaking_changes.push(SignatureChange {
-                    base_surface: base_surface.clone(),
+                    surface: base_surface.clone(),
                     kind: SignatureChangeKind::TsMethodRequiredParamAdded,
                     old: None,
                     new: param.name.clone(),
@@ -197,7 +213,7 @@ impl Report {
             let param = &base.parameters[i];
 
             self.breaking_changes.push(SignatureChange {
-                base_surface: base_surface.clone(),
+                surface: base_surface.clone(),
                 kind: SignatureChangeKind::TsMethodParamRemoved,
                 old: Some(param.name.clone()),
                 new: new_surface.source_token.clone(),
@@ -212,6 +228,61 @@ impl Report {
         new_surface: &Surface,
         new: &VueProp,
     ) {
-        // TODO: implement me
+        // compare prop types
+        if base.type_annotation != new.type_annotation {
+            self.breaking_changes.push(SignatureChange {
+                surface: base_surface.clone(),
+                kind: SignatureChangeKind::VuePropTypeChanged,
+                old: base.type_annotation.clone(),
+                new: match &new.type_annotation {
+                    Some(t) => t.clone(),
+                    None => new_surface.source_token.clone(),
+                },
+            });
+
+            return;
+        }
+
+        // check if prop became required
+        if base.required != new.required && new.required.is_some() {
+            self.breaking_changes.push(SignatureChange {
+                surface: base_surface.clone(),
+                kind: SignatureChangeKind::VuePropBecameRequired,
+                old: base.required.clone(),
+                new: match &new.required {
+                    Some(t) => t.clone(),
+                    None => new_surface.source_token.clone(),
+                },
+            });
+        }
+    }
+
+    /// surfaces that only exists in the new map
+    fn check_added_for_breaks(&mut self, new_surface: &Surface, base: &SurfaceMap) {
+        // only added (required) vue props are breaks for now
+        // and only if the vue component existed in base (otherwise it was introduced)
+        let Signature::VueProp(prop) = &new_surface.signature else {
+            return;
+        };
+
+        let Some(required) = &prop.required else {
+            return;
+        };
+
+        // extract component name FQN
+        let (component_fqn, _) = new_surface
+            .fqn
+            .split_once(".prop.")
+            .expect("failed extracting component name FQN");
+
+        if base.contains_key(component_fqn) {
+            // component existed before, so this added required prop is an actual break!
+            self.breaking_changes.push(SignatureChange {
+                surface: new_surface.clone(),
+                kind: SignatureChangeKind::VueRequiredPropAdded,
+                old: None,
+                new: required.clone(),
+            });
+        }
     }
 }

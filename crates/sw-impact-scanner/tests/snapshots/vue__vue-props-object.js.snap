@@ -1,0 +1,337 @@
+---
+source: crates/sw-impact-scanner/tests/vue.rs
+description: "import template from './props-object.html.twig';\n\nexport default {\n    template,\n\n    props: {\n        title: String,\n        count: Number,\n        disabled: Boolean,\n        items: Array,\n        user: Object,\n        callback: Function,\n        createdAt: Date,\n\n        special: {\n            type: String,\n            required: true,\n        },\n\n        always: {\n            type: Object,\n            default: () => ({}),\n        },\n\n        multi: [String, Number],\n\n        multiObj: {\n            type: [String, Number],\n        },\n    },\n};\n"
+---
+vue.props-object:
+  file_path: tests/fixtures/vue-props-object.js
+  source_token:
+    text_normalized: ""
+    source_range:
+      start_byte: 0
+      end_byte: 0
+      start_point:
+        row: 0
+        column: 0
+      end_point:
+        row: 0
+        column: 0
+  fqn: vue.props-object
+  signature: None
+vue.props-object.prop.always:
+  file_path: tests/fixtures/vue-props-object.js
+  source_token:
+    text_normalized: always
+    source_range:
+      start_byte: 359
+      end_byte: 365
+      start_point:
+        row: 19
+        column: 8
+      end_point:
+        row: 19
+        column: 14
+  fqn: vue.props-object.prop.always
+  signature:
+    VueProp:
+      type_annotation:
+        text_normalized: Object
+        source_range:
+          start_byte: 387
+          end_byte: 393
+          start_point:
+            row: 20
+            column: 18
+          end_point:
+            row: 20
+            column: 24
+      required: ~
+vue.props-object.prop.callback:
+  file_path: tests/fixtures/vue-props-object.js
+  source_token:
+    text_normalized: callback
+    source_range:
+      start_byte: 220
+      end_byte: 228
+      start_point:
+        row: 11
+        column: 8
+      end_point:
+        row: 11
+        column: 16
+  fqn: vue.props-object.prop.callback
+  signature:
+    VueProp:
+      type_annotation:
+        text_normalized: Function
+        source_range:
+          start_byte: 230
+          end_byte: 238
+          start_point:
+            row: 11
+            column: 18
+          end_point:
+            row: 11
+            column: 26
+      required: ~
+vue.props-object.prop.count:
+  file_path: tests/fixtures/vue-props-object.js
+  source_token:
+    text_normalized: count
+    source_range:
+      start_byte: 126
+      end_byte: 131
+      start_point:
+        row: 7
+        column: 8
+      end_point:
+        row: 7
+        column: 13
+  fqn: vue.props-object.prop.count
+  signature:
+    VueProp:
+      type_annotation:
+        text_normalized: Number
+        source_range:
+          start_byte: 133
+          end_byte: 139
+          start_point:
+            row: 7
+            column: 15
+          end_point:
+            row: 7
+            column: 21
+      required: ~
+vue.props-object.prop.createdAt:
+  file_path: tests/fixtures/vue-props-object.js
+  source_token:
+    text_normalized: createdAt
+    source_range:
+      start_byte: 248
+      end_byte: 257
+      start_point:
+        row: 12
+        column: 8
+      end_point:
+        row: 12
+        column: 17
+  fqn: vue.props-object.prop.createdAt
+  signature:
+    VueProp:
+      type_annotation:
+        text_normalized: Date
+        source_range:
+          start_byte: 259
+          end_byte: 263
+          start_point:
+            row: 12
+            column: 19
+          end_point:
+            row: 12
+            column: 23
+      required: ~
+vue.props-object.prop.disabled:
+  file_path: tests/fixtures/vue-props-object.js
+  source_token:
+    text_normalized: disabled
+    source_range:
+      start_byte: 149
+      end_byte: 157
+      start_point:
+        row: 8
+        column: 8
+      end_point:
+        row: 8
+        column: 16
+  fqn: vue.props-object.prop.disabled
+  signature:
+    VueProp:
+      type_annotation:
+        text_normalized: Boolean
+        source_range:
+          start_byte: 159
+          end_byte: 166
+          start_point:
+            row: 8
+            column: 18
+          end_point:
+            row: 8
+            column: 25
+      required: ~
+vue.props-object.prop.items:
+  file_path: tests/fixtures/vue-props-object.js
+  source_token:
+    text_normalized: items
+    source_range:
+      start_byte: 176
+      end_byte: 181
+      start_point:
+        row: 9
+        column: 8
+      end_point:
+        row: 9
+        column: 13
+  fqn: vue.props-object.prop.items
+  signature:
+    VueProp:
+      type_annotation:
+        text_normalized: Array
+        source_range:
+          start_byte: 183
+          end_byte: 188
+          start_point:
+            row: 9
+            column: 15
+          end_point:
+            row: 9
+            column: 20
+      required: ~
+vue.props-object.prop.multi:
+  file_path: tests/fixtures/vue-props-object.js
+  source_token:
+    text_normalized: multi
+    source_range:
+      start_byte: 448
+      end_byte: 453
+      start_point:
+        row: 24
+        column: 8
+      end_point:
+        row: 24
+        column: 13
+  fqn: vue.props-object.prop.multi
+  signature:
+    VueProp:
+      type_annotation:
+        text_normalized: "[String, Number]"
+        source_range:
+          start_byte: 455
+          end_byte: 471
+          start_point:
+            row: 24
+            column: 15
+          end_point:
+            row: 24
+            column: 31
+      required: ~
+vue.props-object.prop.multiObj:
+  file_path: tests/fixtures/vue-props-object.js
+  source_token:
+    text_normalized: multiObj
+    source_range:
+      start_byte: 482
+      end_byte: 490
+      start_point:
+        row: 26
+        column: 8
+      end_point:
+        row: 26
+        column: 16
+  fqn: vue.props-object.prop.multiObj
+  signature:
+    VueProp:
+      type_annotation:
+        text_normalized: "[String, Number]"
+        source_range:
+          start_byte: 512
+          end_byte: 528
+          start_point:
+            row: 27
+            column: 18
+          end_point:
+            row: 27
+            column: 34
+      required: ~
+vue.props-object.prop.special:
+  file_path: tests/fixtures/vue-props-object.js
+  source_token:
+    text_normalized: special
+    source_range:
+      start_byte: 274
+      end_byte: 281
+      start_point:
+        row: 14
+        column: 8
+      end_point:
+        row: 14
+        column: 15
+  fqn: vue.props-object.prop.special
+  signature:
+    VueProp:
+      type_annotation:
+        text_normalized: String
+        source_range:
+          start_byte: 303
+          end_byte: 309
+          start_point:
+            row: 15
+            column: 18
+          end_point:
+            row: 15
+            column: 24
+      required:
+        text_normalized: "true"
+        source_range:
+          start_byte: 333
+          end_byte: 337
+          start_point:
+            row: 16
+            column: 22
+          end_point:
+            row: 16
+            column: 26
+vue.props-object.prop.title:
+  file_path: tests/fixtures/vue-props-object.js
+  source_token:
+    text_normalized: title
+    source_range:
+      start_byte: 103
+      end_byte: 108
+      start_point:
+        row: 6
+        column: 8
+      end_point:
+        row: 6
+        column: 13
+  fqn: vue.props-object.prop.title
+  signature:
+    VueProp:
+      type_annotation:
+        text_normalized: String
+        source_range:
+          start_byte: 110
+          end_byte: 116
+          start_point:
+            row: 6
+            column: 15
+          end_point:
+            row: 6
+            column: 21
+      required: ~
+vue.props-object.prop.user:
+  file_path: tests/fixtures/vue-props-object.js
+  source_token:
+    text_normalized: user
+    source_range:
+      start_byte: 198
+      end_byte: 202
+      start_point:
+        row: 10
+        column: 8
+      end_point:
+        row: 10
+        column: 12
+  fqn: vue.props-object.prop.user
+  signature:
+    VueProp:
+      type_annotation:
+        text_normalized: Object
+        source_range:
+          start_byte: 204
+          end_byte: 210
+          start_point:
+            row: 10
+            column: 14
+          end_point:
+            row: 10
+            column: 20
+      required: ~

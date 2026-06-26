@@ -1,0 +1,73 @@
+---
+source: crates/sw-impact-scanner/tests/vue.rs
+description: "import template from './props-array.html.twig';\n\nexport default {\n    template,\n\n    props: ['title', 'count', 'disabled'],\n};\n"
+---
+vue.props-array:
+  file_path: tests/fixtures/vue-props-array.js
+  source_token:
+    text_normalized: ""
+    source_range:
+      start_byte: 0
+      end_byte: 0
+      start_point:
+        row: 0
+        column: 0
+      end_point:
+        row: 0
+        column: 0
+  fqn: vue.props-array
+  signature: None
+vue.props-array.prop.count:
+  file_path: tests/fixtures/vue-props-array.js
+  source_token:
+    text_normalized: "'count'"
+    source_range:
+      start_byte: 102
+      end_byte: 109
+      start_point:
+        row: 5
+        column: 21
+      end_point:
+        row: 5
+        column: 28
+  fqn: vue.props-array.prop.count
+  signature:
+    VueProp:
+      type_annotation: ~
+      required: ~
+vue.props-array.prop.disabled:
+  file_path: tests/fixtures/vue-props-array.js
+  source_token:
+    text_normalized: "'disabled'"
+    source_range:
+      start_byte: 111
+      end_byte: 121
+      start_point:
+        row: 5
+        column: 30
+      end_point:
+        row: 5
+        column: 40
+  fqn: vue.props-array.prop.disabled
+  signature:
+    VueProp:
+      type_annotation: ~
+      required: ~
+vue.props-array.prop.title:
+  file_path: tests/fixtures/vue-props-array.js
+  source_token:
+    text_normalized: "'title'"
+    source_range:
+      start_byte: 93
+      end_byte: 100
+      start_point:
+        row: 5
+        column: 12
+      end_point:
+        row: 5
+        column: 19
+  fqn: vue.props-array.prop.title
+  signature:
+    VueProp:
+      type_annotation: ~
+      required: ~
